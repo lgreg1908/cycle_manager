@@ -13,6 +13,6 @@ def main():
         print("Admin:", admin.id, admin.email)
     finally:
         db.close()
-
+        
 if __name__ == "__main__":
     main()
