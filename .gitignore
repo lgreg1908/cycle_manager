@@ -1,0 +1,66 @@
+# ======================
+# Python
+# ======================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ======================
+# Environment / secrets
+# ======================
+.env
+.env.*
+!.env.example
+
+# ======================
+# FastAPI / Uvicorn
+# ======================
+*.log
+
+# ======================
+# Alembic
+# ======================
+alembic/versions/*.pyc
+
+# ======================
+# Database / Docker
+# ======================
+*.db
+*.sqlite3
+docker-data/
+pgdata/
+
+# ======================
+# IDEs / Editors
+# ======================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ======================
+# OS
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# Testing / Coverage
+# ======================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ======================
+# Build / Distribution
+# ======================
+build/
+dist/
+*.egg-info/

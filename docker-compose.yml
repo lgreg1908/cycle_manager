@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16
+    container_name: hr_postgres
+    environment:
+      POSTGRES_USER: hr_app
+      POSTGRES_PASSWORD: hr_app_pw
+      POSTGRES_DB: hr_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - hr_pgdata:/var/lib/postgresql/data
+volumes:
+  hr_pgdata:
