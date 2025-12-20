@@ -10,5 +10,19 @@ services:
       - "5432:5432"
     volumes:
       - hr_pgdata:/var/lib/postgresql/data
+
+  db_test:
+    image: postgres:16
+    container_name: hr_postgres_test
+    environment:
+      POSTGRES_USER: hr_app
+      POSTGRES_PASSWORD: hr_app_pw
+      POSTGRES_DB: hr_platform_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - hr_pgdata_test:/var/lib/postgresql/data
+
 volumes:
   hr_pgdata:
+  hr_pgdata_test:
