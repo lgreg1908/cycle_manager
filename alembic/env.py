@@ -2,6 +2,10 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from app.models.user import User  # noqa: F401
+from app.models.employee import Employee  # noqa: F401
+from app.models.rbac import Role, UserRole  # noqa: F401
+
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
