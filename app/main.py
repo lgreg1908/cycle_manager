@@ -6,6 +6,7 @@ from app.api.root import router as root_router
 from app.api.admin import router as admin_router
 from app.api.cycles import router as cycles_router
 from app.api.assignments import router as assignments_router
+from app.api.evaluations import router as evaluations_router
 
 app = FastAPI(title="HR Cycle Manager")
 
@@ -15,3 +16,4 @@ app.include_router(me_router)
 app.include_router(admin_router)
 app.include_router(cycles_router)
 app.include_router(assignments_router)
+app.include_router(evaluations_router)
