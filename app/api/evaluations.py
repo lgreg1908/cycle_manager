@@ -17,6 +17,7 @@ from app.schemas.evaluation import (
     EvaluationWithResponsesOut,
     SaveDraftPayload,
 )
+from app.core.audit import log_event
 
 router = APIRouter(prefix="/cycles/{cycle_id}", tags=["evaluations"])
 
@@ -117,7 +118,7 @@ def save_draft(
     evaluation_id: str,
     payload: SaveDraftPayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     e = db.get(Evaluation, evaluation_id)
     if not e or str(e.cycle_id) != cycle_id:
@@ -130,12 +131,15 @@ def save_draft(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    assert_user_is_reviewer(db, user, assignment)
+    assert_user_is_reviewer(db, current_user, assignment)
 
     for r in payload.responses:
         existing = (
             db.query(EvaluationResponse)
-            .filter(EvaluationResponse.evaluation_id == e.id, EvaluationResponse.question_key == r.question_key)
+            .filter(
+                EvaluationResponse.evaluation_id == e.id,
+                EvaluationResponse.question_key == r.question_key,
+            )
             .one_or_none()
         )
         if existing:
@@ -152,9 +156,19 @@ def save_draft(
             )
 
     e.updated_at = datetime.utcnow()
+
+    # audit (optional)
+    log_event(
+        db=db,
+        actor=current_user,
+        action="EVALUATION_DRAFT_SAVED",
+        entity_type="evaluation",
+        entity_id=e.id,
+        metadata={"status": e.status},
+    )
+
     db.commit()
     db.refresh(e)
-
     return eval_to_out_with_responses(db, e)
 
 
@@ -163,7 +177,7 @@ def submit_evaluation(
     cycle_id: str,
     evaluation_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     e = db.get(Evaluation, evaluation_id)
     if not e or str(e.cycle_id) != cycle_id:
@@ -176,11 +190,22 @@ def submit_evaluation(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    assert_user_is_reviewer(db, user, assignment)
+    assert_user_is_reviewer(db, current_user, assignment)
 
+    prev = e.status
     e.status = "SUBMITTED"
     e.submitted_at = datetime.utcnow()
     e.updated_at = datetime.utcnow()
+
+    log_event(
+        db=db,
+        actor=current_user,
+        action="EVALUATION_SUBMITTED",
+        entity_type="evaluation",
+        entity_id=e.id,
+        metadata={"from": prev, "to": e.status},
+    )
+
     db.commit()
     db.refresh(e)
     return eval_to_out(e)
@@ -191,7 +216,7 @@ def return_evaluation(
     cycle_id: str,
     evaluation_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     e = db.get(Evaluation, evaluation_id)
     if not e or str(e.cycle_id) != cycle_id:
@@ -204,10 +229,21 @@ def return_evaluation(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    assert_user_is_approver(db, user, assignment)
+    assert_user_is_approver(db, current_user, assignment)
 
+    prev = e.status
     e.status = "RETURNED"
     e.updated_at = datetime.utcnow()
+
+    log_event(
+        db=db,
+        actor=current_user,
+        action="EVALUATION_RETURNED",
+        entity_type="evaluation",
+        entity_id=e.id,
+        metadata={"from": prev, "to": e.status},
+    )
+
     db.commit()
     db.refresh(e)
     return eval_to_out(e)
@@ -218,7 +254,7 @@ def approve_evaluation(
     cycle_id: str,
     evaluation_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     e = db.get(Evaluation, evaluation_id)
     if not e or str(e.cycle_id) != cycle_id:
@@ -231,11 +267,22 @@ def approve_evaluation(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    assert_user_is_approver(db, user, assignment)
+    assert_user_is_approver(db, current_user, assignment)
 
+    prev = e.status
     e.status = "APPROVED"
     e.approved_at = datetime.utcnow()
     e.updated_at = datetime.utcnow()
+
+    log_event(
+        db=db,
+        actor=current_user,
+        action="EVALUATION_APPROVED",
+        entity_type="evaluation",
+        entity_id=e.id,
+        metadata={"from": prev, "to": e.status},
+    )
+
     db.commit()
     db.refresh(e)
     return eval_to_out(e)

@@ -10,6 +10,7 @@ from app.models.review_assignment import ReviewAssignment
 from app.models.employee import Employee
 from app.models.user import User
 from app.schemas.review_assignment import AssignmentBulkCreate, AssignmentOut
+from app.core.audit import log_event
 
 router = APIRouter(prefix="/cycles/{cycle_id}/assignments", tags=["assignments"])
 
@@ -58,18 +59,15 @@ def bulk_create_assignments(
     cycle_id: str,
     payload: AssignmentBulkCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles("ADMIN")),
+    current_user: User = Depends(require_roles("ADMIN")),
 ):
     cycle = db.get(ReviewCycle, cycle_id)
     if not cycle:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
-    # Optional rule: only allow bulk assignment while cycle is DRAFT
-    # (I recommend this to avoid chaos mid-cycle)
     if cycle.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Assignments can only be created while cycle is DRAFT")
 
-    # Validate referenced employees exist
     ids = set()
     for item in payload.items:
         ids.update([item.reviewer_employee_id, item.subject_employee_id, item.approver_employee_id])
@@ -96,11 +94,24 @@ def bulk_create_assignments(
         db.commit()
     except IntegrityError:
         db.rollback()
-        # Most likely uniqueness violation (duplicate assignment)
         raise HTTPException(status_code=409, detail="Duplicate assignment(s) detected for this cycle")
 
-    # refresh to get ids/timestamps
     for a in created:
         db.refresh(a)
+        log_event(
+            db=db,
+            actor=current_user,
+            action="ASSIGNMENT_CREATED",
+            entity_type="review_assignment",
+            entity_id=a.id,
+            metadata={
+                "cycle_id": str(a.cycle_id),
+                "reviewer_employee_id": str(a.reviewer_employee_id),
+                "subject_employee_id": str(a.subject_employee_id),
+                "approver_employee_id": str(a.approver_employee_id),
+            },
+        )
+
+    db.commit()
 
     return [to_out(a) for a in created]

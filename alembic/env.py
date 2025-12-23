@@ -9,6 +9,7 @@ from app.models.review_cycle import ReviewCycle  # noqa: F401
 from app.models.review_assignment import ReviewAssignment # noqa: F401
 from app.models.evaluation import Evaluation  # noqa: F401
 from app.models.evaluation_response import EvaluationResponse  # noqa: F401
+from app.models.audit_event import AuditEvent  # noqa: F401
 
 from logging.config import fileConfig
 
