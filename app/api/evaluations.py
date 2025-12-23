@@ -3,7 +3,10 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from fastapi import Response
+from sqlalchemy.orm.exc import StaleDataError
 
+from app.core.optimistic_lock import parse_if_match, assert_version_matches, set_etag
 from app.core.access import assert_user_is_reviewer, assert_user_is_approver
 from app.core.audit import log_event
 from app.core.idempotency import (
@@ -180,16 +183,19 @@ def get_evaluation(
 
     return eval_to_out_with_responses(db, e)
 
-
 @router.post("/evaluations/{evaluation_id}/draft", response_model=EvaluationWithResponsesOut)
 def save_draft(
     cycle_id: str,
     evaluation_id: str,
     payload: SaveDraftPayload,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Drafts can only be edited while cycle is ACTIVE")
@@ -214,11 +220,14 @@ def save_draft(
             route="/cycles/{cycle_id}/evaluations/{evaluation_id}/draft",
             payload_for_hash={
                 "evaluation_id": evaluation_id,
+                "if_match": expected_version,
                 "responses": [r.model_dump() for r in payload.responses],
             },
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationWithResponsesOut(**idem_row.response_body)
+            out = EvaluationWithResponsesOut(**idem_row.response_body)
+            set_etag(response, out.version)
+            return out
 
     try:
         with db.begin_nested():
@@ -228,6 +237,9 @@ def save_draft(
 
             if e2.status != "DRAFT":
                 raise HTTPException(status_code=409, detail="Can only edit draft evaluations")
+
+            # optimistic lock check
+            assert_version_matches(current_version=e2.version, if_match_version=expected_version)
 
             for r in payload.responses:
                 existing = (
@@ -253,7 +265,7 @@ def save_draft(
 
             e2.updated_at = datetime.utcnow()
 
-            # ✅ IMPORTANT: autoflush is False in tests, so flush before querying responses
+            # IMPORTANT: ensure version increments + responses are queryable
             db.flush()
 
             log_event(
@@ -267,6 +279,7 @@ def save_draft(
                     "assignment_id": str(e2.assignment_id),
                     "status": e2.status,
                     "response_count": len(payload.responses),
+                    "version": e2.version,
                 },
             )
 
@@ -280,23 +293,33 @@ def save_draft(
                     response_body=out.model_dump(mode="json"),
                 )
 
+        set_etag(response, out.version)
         return out
 
+    except StaleDataError:
+        # DB-level “someone updated between your check and flush”
+        if idem_row:
+            with db.begin_nested():
+                fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
         raise
 
-
 @router.post("/evaluations/{evaluation_id}/submit", response_model=EvaluationOut)
 def submit_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Evaluations can only be submitted while cycle is ACTIVE")
@@ -309,16 +332,21 @@ def submit_evaluation(
             key=idempotency_key,
             method="POST",
             route="/cycles/{cycle_id}/evaluations/{evaluation_id}/submit",
-            payload_for_hash={"evaluation_id": evaluation_id},
+            payload_for_hash={"evaluation_id": evaluation_id, "if_match": expected_version},
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationOut(**idem_row.response_body)
+            out = EvaluationOut(**idem_row.response_body)
+            set_etag(response, out.version)
+            return out
 
     try:
         with db.begin_nested():
             e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
             assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
             assert_user_is_reviewer(db, current_user, assignment)
+
+            # optimistic lock check
+            assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
             if e.status == "SUBMITTED":
                 out = eval_to_out(e)
@@ -331,6 +359,8 @@ def submit_evaluation(
                 e.submitted_at = datetime.utcnow()
                 e.updated_at = datetime.utcnow()
 
+                db.flush()  # bumps version
+
                 log_event(
                     db=db,
                     actor=current_user,
@@ -342,6 +372,7 @@ def submit_evaluation(
                         "assignment_id": str(e.assignment_id),
                         "from": prev,
                         "to": e.status,
+                        "version": e.version,
                     },
                 )
                 out = eval_to_out(e)
@@ -354,23 +385,32 @@ def submit_evaluation(
                     response_body=out.model_dump(mode="json"),
                 )
 
+        set_etag(response, out.version)
         return out
 
+    except StaleDataError:
+        if idem_row:
+            with db.begin_nested():
+                fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
         raise
 
-
 @router.post("/evaluations/{evaluation_id}/return", response_model=EvaluationOut)
 def return_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Evaluations can only be returned while cycle is ACTIVE")
@@ -383,16 +423,20 @@ def return_evaluation(
             key=idempotency_key,
             method="POST",
             route="/cycles/{cycle_id}/evaluations/{evaluation_id}/return",
-            payload_for_hash={"evaluation_id": evaluation_id},
+            payload_for_hash={"evaluation_id": evaluation_id, "if_match": expected_version},
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationOut(**idem_row.response_body)
+            out = EvaluationOut(**idem_row.response_body)
+            set_etag(response, out.version)
+            return out
 
     try:
         with db.begin_nested():
             e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
             assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
             assert_user_is_approver(db, current_user, assignment)
+
+            assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
             if e.status == "RETURNED":
                 out = eval_to_out(e)
@@ -403,6 +447,8 @@ def return_evaluation(
                 prev = e.status
                 e.status = "RETURNED"
                 e.updated_at = datetime.utcnow()
+
+                db.flush()
 
                 log_event(
                     db=db,
@@ -415,6 +461,7 @@ def return_evaluation(
                         "assignment_id": str(e.assignment_id),
                         "from": prev,
                         "to": e.status,
+                        "version": e.version,
                     },
                 )
                 out = eval_to_out(e)
@@ -427,23 +474,32 @@ def return_evaluation(
                     response_body=out.model_dump(mode="json"),
                 )
 
+        set_etag(response, out.version)
         return out
 
+    except StaleDataError:
+        if idem_row:
+            with db.begin_nested():
+                fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
         raise
 
-
 @router.post("/evaluations/{evaluation_id}/approve", response_model=EvaluationOut)
 def approve_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Evaluations can only be approved while cycle is ACTIVE")
@@ -456,16 +512,20 @@ def approve_evaluation(
             key=idempotency_key,
             method="POST",
             route="/cycles/{cycle_id}/evaluations/{evaluation_id}/approve",
-            payload_for_hash={"evaluation_id": evaluation_id},
+            payload_for_hash={"evaluation_id": evaluation_id, "if_match": expected_version},
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationOut(**idem_row.response_body)
+            out = EvaluationOut(**idem_row.response_body)
+            set_etag(response, out.version)
+            return out
 
     try:
         with db.begin_nested():
             e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
             assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
             assert_user_is_approver(db, current_user, assignment)
+
+            assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
             if e.status == "APPROVED":
                 out = eval_to_out(e)
@@ -478,6 +538,8 @@ def approve_evaluation(
                 e.approved_at = datetime.utcnow()
                 e.updated_at = datetime.utcnow()
 
+                db.flush()
+
                 log_event(
                     db=db,
                     actor=current_user,
@@ -489,6 +551,7 @@ def approve_evaluation(
                         "assignment_id": str(e.assignment_id),
                         "from": prev,
                         "to": e.status,
+                        "version": e.version,
                     },
                 )
                 out = eval_to_out(e)
@@ -501,8 +564,14 @@ def approve_evaluation(
                     response_body=out.model_dump(mode="json"),
                 )
 
+        set_etag(response, out.version)
         return out
 
+    except StaleDataError:
+        if idem_row:
+            with db.begin_nested():
+                fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
             with db.begin_nested():
