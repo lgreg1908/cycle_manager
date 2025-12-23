@@ -8,11 +8,14 @@ from app.db.session import get_db
 from app.core.config import settings
 
 
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+@pytest.fixture(scope="session")
+def engine():
+    # Create engine AFTER settings is loaded with ENV_FILE=.env.test
+    return create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def create_test_schema():
+def create_test_schema(engine):
     # One-time schema setup for the test database
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -21,7 +24,7 @@ def create_test_schema():
 
 
 @pytest.fixture()
-def db_session():
+def db_session(engine):
     """
     Provides a SQLAlchemy Session inside a transaction that is rolled back
     after each test, so tests don't leak data into each other.
