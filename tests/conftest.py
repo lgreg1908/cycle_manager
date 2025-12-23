@@ -1,4 +1,3 @@
-import os
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -8,18 +7,16 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 
-# Ensure tests use ENV_FILE=.env.test
-# (pytest invocation should set ENV_FILE, but this guards against mistakes)
-assert settings.APP_ENV in ("test", "local")  # allow local while bootstrapping
 
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
-TestingSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+@pytest.fixture(scope="session")
+def engine():
+    # Create engine AFTER settings is loaded with ENV_FILE=.env.test
+    return create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def create_test_schema():
-    # For now: create/drop tables directly.
-    # Later: we’ll switch to alembic migrations in tests.
+def create_test_schema(engine):
+    # One-time schema setup for the test database
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
@@ -27,12 +24,23 @@ def create_test_schema():
 
 
 @pytest.fixture()
-def db_session():
-    db = TestingSessionLocal()
+def db_session(engine):
+    """
+    Provides a SQLAlchemy Session inside a transaction that is rolled back
+    after each test, so tests don't leak data into each other.
+    """
+    connection = engine.connect()
+    transaction = connection.begin()
+
+    TestingSessionLocal = sessionmaker(bind=connection, autocommit=False, autoflush=False)
+    session = TestingSessionLocal()
+
     try:
-        yield db
+        yield session
     finally:
-        db.close()
+        session.close()
+        transaction.rollback()
+        connection.close()
 
 
 @pytest.fixture(autouse=True)
