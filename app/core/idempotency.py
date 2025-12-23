@@ -1,7 +1,7 @@
 import hashlib
 import json
 from datetime import datetime
-from typing import Any, Callable, Tuple
+from typing import Any, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -12,7 +12,6 @@ from app.models.user import User
 
 
 def _hash_payload(payload: Any) -> str:
-    # stable hash so repeated requests with same key but different body can be detected
     raw = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
@@ -56,11 +55,10 @@ def begin_idempotent_request(
                 detail="Request with this Idempotency-Key is already in progress",
             )
 
-        # FAILED: allow retry (treat like new attempt)
+        # FAILED -> allow retry; mark in-progress
         existing.status = "IN_PROGRESS"
         existing.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(existing)
+        db.flush()
         return existing, False
 
     row = IdempotencyKey(
@@ -74,24 +72,24 @@ def begin_idempotent_request(
         updated_at=datetime.utcnow(),
     )
     db.add(row)
+
     try:
-        db.commit()
+        db.flush()
     except IntegrityError:
-        db.rollback()
-        # race: someone else inserted first
-        row = (
+        # Someone else inserted first (same tx window / concurrent request)
+        # NOTE: do NOT rollback here; let caller own rollback.
+        existing = (
             db.query(IdempotencyKey)
             .filter(IdempotencyKey.user_id == user.id, IdempotencyKey.key == key)
             .one()
         )
-        if row.status == "COMPLETED":
-            return row, False
+        if existing.status == "COMPLETED":
+            return existing, False
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency-Key collision (try again)",
         )
 
-    db.refresh(row)
     return row, True
 
 
@@ -106,11 +104,10 @@ def complete_idempotent_request(
     row.response_code = response_code
     row.response_body = response_body
     row.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(row)
+    db.flush()
 
 
-def fail_idempotent_request(db: Session, row: IdempotencyKey):
+def fail_idempotent_request(*, db: Session, row: IdempotencyKey):
     row.status = "FAILED"
     row.updated_at = datetime.utcnow()
-    db.commit()
+    db.flush()

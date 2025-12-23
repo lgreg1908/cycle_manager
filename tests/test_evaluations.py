@@ -1,12 +1,31 @@
+from fastapi.testclient import TestClient
+
 from app.models.audit_event import AuditEvent
+from app.models.idempotency import IdempotencyKey
 
 from tests.helpers import (
-    create_user, grant_role, create_employee, create_cycle, create_assignment, ensure_role
+    create_user,
+    grant_role,
+    create_employee,
+    create_cycle,
+    create_assignment,
 )
+
+
+def _count_audit(db, action: str, entity_type: str, entity_id: str) -> int:
+    return (
+        db.query(AuditEvent)
+        .filter(
+            AuditEvent.action == action,
+            AuditEvent.entity_type == entity_type,
+            AuditEvent.entity_id == entity_id,
+        )
+        .count()
+    )
+
 
 def test_evaluation_cannot_be_created_when_cycle_not_active(db_session, client):
     reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
-    # reviewer must be linked to employee
     reviewer_emp = create_employee(db_session, "E200", "Reviewer", user=reviewer_user)
 
     approver_user = create_user(db_session, "approver@local.test", "Approver")
@@ -28,19 +47,16 @@ def test_evaluation_cannot_be_created_when_cycle_not_active(db_session, client):
 
 
 def test_evaluation_happy_path_workflow(db_session, client):
-    # Users
     admin = create_user(db_session, "admin@local.test", "Admin")
     grant_role(db_session, admin, "ADMIN")
 
     reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
     approver_user = create_user(db_session, "approver@local.test", "Approver")
 
-    # Employees (link reviewer/approver to their users)
     reviewer_emp = create_employee(db_session, "E200", "Reviewer", user=reviewer_user)
     approver_emp = create_employee(db_session, "E300", "Approver", user=approver_user)
     subject_emp = create_employee(db_session, "E400", "Subject", user=None)
 
-    # ACTIVE cycle + assignment
     cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
     assignment = create_assignment(db_session, cycle, reviewer_emp, subject_emp, approver_emp)
 
@@ -54,6 +70,9 @@ def test_evaluation_happy_path_workflow(db_session, client):
     assert ev["status"] == "DRAFT"
     evaluation_id = ev["id"]
 
+    # audit exists exactly once
+    assert _count_audit(db_session, "EVALUATION_CREATED", "evaluation", evaluation_id) == 1
+
     # (Reviewer) save draft
     r = client.post(
         f"/cycles/{cycle.id}/evaluations/{evaluation_id}/draft",
@@ -63,6 +82,7 @@ def test_evaluation_happy_path_workflow(db_session, client):
     assert r.status_code == 200
     body = r.json()
     assert body["responses"]["q1"] == "hello"
+    assert _count_audit(db_session, "EVALUATION_DRAFT_SAVED", "evaluation", evaluation_id) == 1
 
     # (Approver) cannot save draft
     r = client.post(
@@ -79,6 +99,7 @@ def test_evaluation_happy_path_workflow(db_session, client):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "SUBMITTED"
+    assert _count_audit(db_session, "EVALUATION_SUBMITTED", "evaluation", evaluation_id) == 1
 
     # (Reviewer) cannot approve
     r = client.post(
@@ -94,6 +115,7 @@ def test_evaluation_happy_path_workflow(db_session, client):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "RETURNED"
+    assert _count_audit(db_session, "EVALUATION_RETURNED", "evaluation", evaluation_id) == 1
 
     # (Approver) cannot approve from RETURNED
     r = client.post(
@@ -102,7 +124,7 @@ def test_evaluation_happy_path_workflow(db_session, client):
     )
     assert r.status_code == 409
 
-    # (Reviewer) can submit again? should fail because status is RETURNED (your logic: only DRAFT submit)
+    # (Reviewer) submit again should fail (status RETURNED)
     r = client.post(
         f"/cycles/{cycle.id}/evaluations/{evaluation_id}/submit",
         headers={"X-User-Email": "reviewer@local.test"},
@@ -151,3 +173,49 @@ def test_get_evaluation_access_controls(db_session, client):
         headers={"X-User-Email": "random@local.test"},
     )
     assert r.status_code == 403
+
+
+def test_create_evaluation_idempotency_key_dedupes_audit(db_session, client):
+    admin = create_user(db_session, "admin@local.test", "Admin")
+    grant_role(db_session, admin, "ADMIN")
+
+    reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
+    approver_user = create_user(db_session, "approver@local.test", "Approver")
+
+    reviewer_emp = create_employee(db_session, "E200", "Reviewer", user=reviewer_user)
+    approver_emp = create_employee(db_session, "E300", "Approver", user=approver_user)
+    subject_emp = create_employee(db_session, "E400", "Subject", user=None)
+
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    assignment = create_assignment(db_session, cycle, reviewer_emp, subject_emp, approver_emp)
+
+    idem_key = "idem-create-eval-1"
+
+    r1 = client.post(
+        f"/cycles/{cycle.id}/assignments/{assignment.id}/evaluation",
+        headers={"X-User-Email": "reviewer@local.test", "Idempotency-Key": idem_key},
+    )
+    assert r1.status_code == 201
+    ev1 = r1.json()
+    evaluation_id = ev1["id"]
+
+    # repeat exact same request with same key -> should return same evaluation and NOT add audit again
+    r2 = client.post(
+        f"/cycles/{cycle.id}/assignments/{assignment.id}/evaluation",
+        headers={"X-User-Email": "reviewer@local.test", "Idempotency-Key": idem_key},
+    )
+    assert r2.status_code == 201
+    ev2 = r2.json()
+    assert ev2["id"] == evaluation_id
+
+    # audit only once
+    assert _count_audit(db_session, "EVALUATION_CREATED", "evaluation", evaluation_id) == 1
+
+    # idempotency row stored
+    row = (
+        db_session.query(IdempotencyKey)
+        .filter(IdempotencyKey.key == idem_key)
+        .one_or_none()
+    )
+    assert row is not None
+    assert row.status == "COMPLETED"
