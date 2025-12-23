@@ -63,7 +63,7 @@ def create_cycle(
         updated_at=datetime.utcnow(),
     )
     db.add(c)
-    db.flush()
+    db.flush()  # ensures c.id exists for audit
 
     log_event(
         db=db,
@@ -98,12 +98,15 @@ def update_cycle(
     if c.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Only DRAFT cycles can be updated")
 
-    before = {"name": c.name, "start_date": str(c.start_date), "end_date": str(c.end_date), "status": c.status}
+    before = {
+        "name": c.name,
+        "start_date": str(c.start_date),
+        "end_date": str(c.end_date),
+        "status": c.status,
+    }
 
     if payload.name is not None:
         c.name = payload.name
-    # NOTE: your original code had `or payload.start_date is None` which always evaluates True.
-    # This is the correct nullable-update pattern:
     if payload.start_date is not None:
         c.start_date = payload.start_date
     if payload.end_date is not None:
@@ -119,7 +122,12 @@ def update_cycle(
         entity_id=c.id,
         metadata={
             "before": before,
-            "after": {"name": c.name, "start_date": str(c.start_date), "end_date": str(c.end_date), "status": c.status},
+            "after": {
+                "name": c.name,
+                "start_date": str(c.start_date),
+                "end_date": str(c.end_date),
+                "status": c.status,
+            },
         },
     )
 
@@ -137,6 +145,10 @@ def activate_cycle(
     c = db.get(ReviewCycle, cycle_id)
     if not c:
         raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Idempotent success: if already ACTIVE, just return it
+    if c.status == "ACTIVE":
+        return to_out(c)
 
     if c.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Only DRAFT cycles can be activated")
@@ -168,6 +180,10 @@ def close_cycle(
     c = db.get(ReviewCycle, cycle_id)
     if not c:
         raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Idempotent success: if already CLOSED, return it
+    if c.status == "CLOSED":
+        return to_out(c)
 
     if c.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Only ACTIVE cycles can be closed")

@@ -11,6 +11,7 @@ class EvaluationOut(BaseModel):
     approved_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    version: int
 
 
 class ResponseUpsert(BaseModel):
