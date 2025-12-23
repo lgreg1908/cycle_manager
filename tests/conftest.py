@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.main import app
@@ -7,16 +7,12 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.config import settings
 
-
-@pytest.fixture(scope="session")
-def engine():
-    # Create engine AFTER settings is loaded with ENV_FILE=.env.test
-    return create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+TestingSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 @pytest.fixture(scope="session", autouse=True)
-def create_test_schema(engine):
-    # One-time schema setup for the test database
+def create_test_schema():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
@@ -24,22 +20,35 @@ def create_test_schema(engine):
 
 
 @pytest.fixture()
-def db_session(engine):
+def db_session():
     """
-    Provides a SQLAlchemy Session inside a transaction that is rolled back
-    after each test, so tests don't leak data into each other.
+    Uses:
+      - one outer transaction per test
+      - one SAVEPOINT (nested transaction) inside it
+
+    This allows application code to call session.commit() freely without
+    breaking the test rollback strategy.
     """
     connection = engine.connect()
-    transaction = connection.begin()
+    outer_tx = connection.begin()
 
-    TestingSessionLocal = sessionmaker(bind=connection, autocommit=False, autoflush=False)
-    session = TestingSessionLocal()
+    session = TestingSessionLocal(bind=connection)
+
+    # Start a SAVEPOINT
+    session.begin_nested()
+
+    # If app code commits, the SAVEPOINT ends. This hook recreates it so the test
+    # continues running inside a savepoint.
+    @event.listens_for(session, "after_transaction_end")
+    def restart_savepoint(sess, trans):
+        if trans.nested and not trans._parent.nested:
+            sess.begin_nested()
 
     try:
         yield session
     finally:
         session.close()
-        transaction.rollback()
+        outer_tx.rollback()
         connection.close()
 
 
