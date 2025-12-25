@@ -1,19 +1,22 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from fastapi import Response
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.core.optimistic_lock import parse_if_match, assert_version_matches, set_etag
 from app.core.access import assert_user_is_reviewer, assert_user_is_approver
 from app.core.audit import log_event
+from app.core.evaluation_form_validation import (
+    validate_draft_payload,
+    validate_submit_from_db,
+)
 from app.core.idempotency import (
     begin_idempotent_request,
     complete_idempotent_request,
     fail_idempotent_request,
 )
+from app.core.optimistic_lock import parse_if_match, assert_version_matches, set_etag
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.evaluation import Evaluation
@@ -167,6 +170,7 @@ def create_or_get_evaluation(
 def get_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -181,7 +185,10 @@ def get_evaluation(
     except HTTPException:
         assert_user_is_approver(db, user, assignment)
 
-    return eval_to_out_with_responses(db, e)
+    out = eval_to_out_with_responses(db, e)
+    set_etag(response, out.version)
+    return out
+
 
 @router.post("/evaluations/{evaluation_id}/draft", response_model=EvaluationWithResponsesOut)
 def save_draft(
@@ -209,6 +216,13 @@ def save_draft(
 
     assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
     assert_user_is_reviewer(db, current_user, assignment)
+
+    # ✅ draft: keys exist + type sanity only
+    validate_draft_payload(
+        db=db,
+        cycle=cycle,
+        responses=[r.model_dump() for r in payload.responses],
+    )
 
     idem_row = None
     if idempotency_key:
@@ -238,7 +252,7 @@ def save_draft(
             if e2.status != "DRAFT":
                 raise HTTPException(status_code=409, detail="Can only edit draft evaluations")
 
-            # optimistic lock check
+            # optimistic lock check (fast failure)
             assert_version_matches(current_version=e2.version, if_match_version=expected_version)
 
             for r in payload.responses:
@@ -297,7 +311,6 @@ def save_draft(
         return out
 
     except StaleDataError:
-        # DB-level “someone updated between your check and flush”
         if idem_row:
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
@@ -307,6 +320,7 @@ def save_draft(
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
         raise
+
 
 @router.post("/evaluations/{evaluation_id}/submit", response_model=EvaluationOut)
 def submit_evaluation(
@@ -347,6 +361,15 @@ def submit_evaluation(
 
             # optimistic lock check
             assert_version_matches(current_version=e.version, if_match_version=expected_version)
+
+            # ✅ submit: full required + rules + references (validate stored responses, not payload)
+            rows = (
+                db.query(EvaluationResponse)
+                .filter(EvaluationResponse.evaluation_id == e.id)
+                .all()
+            )
+            stored = {r.question_key: r.value_text for r in rows}
+            validate_submit_from_db(db=db, cycle=cycle, stored_responses=stored)
 
             if e.status == "SUBMITTED":
                 out = eval_to_out(e)
@@ -398,6 +421,7 @@ def submit_evaluation(
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
         raise
+
 
 @router.post("/evaluations/{evaluation_id}/return", response_model=EvaluationOut)
 def return_evaluation(
@@ -487,6 +511,7 @@ def return_evaluation(
             with db.begin_nested():
                 fail_idempotent_request(db=db, row=idem_row)
         raise
+
 
 @router.post("/evaluations/{evaluation_id}/approve", response_model=EvaluationOut)
 def approve_evaluation(

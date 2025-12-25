@@ -7,6 +7,7 @@ from app.core.rbac import require_roles
 from app.db.session import get_db
 from app.models.review_cycle import ReviewCycle
 from app.models.user import User
+from app.models.form_template import FormTemplate
 from app.schemas.review_cycle import ReviewCycleCreate, ReviewCycleUpdate, ReviewCycleOut
 from app.core.audit import log_event
 
@@ -199,6 +200,40 @@ def close_cycle(
         entity_type="review_cycle",
         entity_id=c.id,
         metadata={"from": prev, "to": c.status},
+    )
+
+    db.commit()
+    db.refresh(c)
+    return to_out(c)
+
+
+@router.post("/{cycle_id}/set-form/{form_template_id}", response_model=ReviewCycleOut)
+def set_cycle_form_template(
+    cycle_id: str,
+    form_template_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("ADMIN")),
+):
+    c = db.get(ReviewCycle, cycle_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    form = db.get(FormTemplate, form_template_id)
+    if not form or not form.is_active:
+        raise HTTPException(status_code=404, detail="Form template not found or inactive")
+
+    before = {"form_template_id": str(c.form_template_id) if c.form_template_id else None}
+
+    c.form_template_id = form.id
+    c.updated_at = datetime.utcnow()
+
+    log_event(
+        db=db,
+        actor=current_user,
+        action="CYCLE_FORM_TEMPLATE_SET",
+        entity_type="review_cycle",
+        entity_id=c.id,
+        metadata={"before": before, "after": {"form_template_id": str(form.id)}},
     )
 
     db.commit()

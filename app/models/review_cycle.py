@@ -31,6 +31,10 @@ class ReviewCycle(Base):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
-
+    form_template_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("form_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
