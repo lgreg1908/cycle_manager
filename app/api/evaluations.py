@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.core.access import assert_user_is_reviewer, assert_user_is_approver
+from app.core.access import assert_user_is_approver, assert_user_is_reviewer
 from app.core.audit import log_event
 from app.core.evaluation_form_validation import (
     validate_draft_payload,
@@ -16,7 +16,7 @@ from app.core.idempotency import (
     complete_idempotent_request,
     fail_idempotent_request,
 )
-from app.core.optimistic_lock import parse_if_match, assert_version_matches, set_etag
+from app.core.optimistic_lock import assert_version_matches, parse_if_match, set_etag
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.evaluation import Evaluation
@@ -66,14 +66,18 @@ def _get_cycle_or_404(db: Session, cycle_id: str) -> ReviewCycle:
     return cycle
 
 
-def _get_assignment_in_cycle_or_404(db: Session, cycle_id: str, assignment_id: str) -> ReviewAssignment:
+def _get_assignment_in_cycle_or_404(
+    db: Session, cycle_id: str, assignment_id: str
+) -> ReviewAssignment:
     assignment = db.get(ReviewAssignment, assignment_id)
     if not assignment or str(assignment.cycle_id) != cycle_id:
         raise HTTPException(status_code=404, detail="Assignment not found in this cycle")
     return assignment
 
 
-def _lock_evaluation_in_cycle_or_404(db: Session, cycle_id: str, evaluation_id: str) -> Evaluation:
+def _lock_evaluation_in_cycle_or_404(
+    db: Session, cycle_id: str, evaluation_id: str
+) -> Evaluation:
     e = (
         db.query(Evaluation)
         .filter(Evaluation.id == evaluation_id)
@@ -85,7 +89,11 @@ def _lock_evaluation_in_cycle_or_404(db: Session, cycle_id: str, evaluation_id: 
     return e
 
 
-@router.post("/assignments/{assignment_id}/evaluation", response_model=EvaluationOut, status_code=201)
+@router.post(
+    "/assignments/{assignment_id}/evaluation",
+    response_model=EvaluationOut,
+    status_code=201,
+)
 def create_or_get_evaluation(
     cycle_id: str,
     assignment_id: str,
@@ -95,7 +103,10 @@ def create_or_get_evaluation(
 ):
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be created/edited while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409,
+            detail="Evaluations can only be created/edited while cycle is ACTIVE",
+        )
 
     assignment = _get_assignment_in_cycle_or_404(db, cycle_id, assignment_id)
     assert_user_is_reviewer(db, user, assignment)
@@ -114,55 +125,64 @@ def create_or_get_evaluation(
             return EvaluationOut(**idem_row.response_body)
 
     try:
-        with db.begin_nested():
-            existing = db.query(Evaluation).filter(Evaluation.assignment_id == assignment.id).one_or_none()
-            if existing:
+        existing = (
+            db.query(Evaluation)
+            .filter(Evaluation.assignment_id == assignment.id)
+            .one_or_none()
+        )
+        if existing:
+            out = eval_to_out(existing)
+        else:
+            # Use a SAVEPOINT for the insert so an IntegrityError doesn't poison the whole txn.
+            try:
+                with db.begin_nested():
+                    e = Evaluation(
+                        cycle_id=assignment.cycle_id,
+                        assignment_id=assignment.id,
+                        status="DRAFT",
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow(),
+                    )
+                    db.add(e)
+                    db.flush()  # may raise IntegrityError if unique constraint hits
+            except IntegrityError:
+                # Savepoint rolled back; safe to query now.
+                existing = (
+                    db.query(Evaluation)
+                    .filter(Evaluation.assignment_id == assignment.id)
+                    .one()
+                )
                 out = eval_to_out(existing)
             else:
-                e = Evaluation(
-                    cycle_id=assignment.cycle_id,
-                    assignment_id=assignment.id,
-                    status="DRAFT",
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
-                )
-                db.add(e)
-
-                try:
-                    db.flush()  # get e.id
-                except IntegrityError:
-                    db.rollback()
-                    existing = db.query(Evaluation).filter(Evaluation.assignment_id == assignment.id).one()
-                    out = eval_to_out(existing)
-                else:
-                    log_event(
-                        db=db,
-                        actor=user,
-                        action="EVALUATION_CREATED",
-                        entity_type="evaluation",
-                        entity_id=e.id,
-                        metadata={
-                            "cycle_id": str(e.cycle_id),
-                            "assignment_id": str(e.assignment_id),
-                            "status": e.status,
-                        },
-                    )
-                    out = eval_to_out(e)
-
-            if idem_row:
-                complete_idempotent_request(
+                log_event(
                     db=db,
-                    row=idem_row,
-                    response_code=201,
-                    response_body=out.model_dump(mode="json"),
+                    actor=user,
+                    action="EVALUATION_CREATED",
+                    entity_type="evaluation",
+                    entity_id=e.id,
+                    metadata={
+                        "cycle_id": str(e.cycle_id),
+                        "assignment_id": str(e.assignment_id),
+                        "status": e.status,
+                    },
                 )
+                out = eval_to_out(e)
+
+        if idem_row:
+            complete_idempotent_request(
+                db=db,
+                row=idem_row,
+                response_code=201,
+                response_body=out.model_dump(mode="json"),
+            )
 
         return out
 
     except Exception:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            # Best-effort: mark idempotency failed within current session/txn.
+            # (Commit/rollback is handled by get_db / test override.)
+            fail_idempotent_request(db=db, row=idem_row)
         raise
 
 
@@ -205,7 +225,9 @@ def save_draft(
 
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Drafts can only be edited while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Drafts can only be edited while cycle is ACTIVE"
+        )
 
     e = db.get(Evaluation, evaluation_id)
     if not e or str(e.cycle_id) != cycle_id:
@@ -250,10 +272,14 @@ def save_draft(
                 raise HTTPException(status_code=404, detail="Evaluation not found")
 
             if e2.status != "DRAFT":
-                raise HTTPException(status_code=409, detail="Can only edit draft evaluations")
+                raise HTTPException(
+                    status_code=409, detail="Can only edit draft evaluations"
+                )
 
             # optimistic lock check (fast failure)
-            assert_version_matches(current_version=e2.version, if_match_version=expected_version)
+            assert_version_matches(
+                current_version=e2.version, if_match_version=expected_version
+            )
 
             for r in payload.responses:
                 existing = (
@@ -279,7 +305,7 @@ def save_draft(
 
             e2.updated_at = datetime.utcnow()
 
-            # IMPORTANT: ensure version increments + responses are queryable
+            # ensure version increments + responses are queryable
             db.flush()
 
             log_event(
@@ -312,13 +338,11 @@ def save_draft(
 
     except StaleDataError:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise
 
 
@@ -336,7 +360,9 @@ def submit_evaluation(
 
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be submitted while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Evaluations can only be submitted while cycle is ACTIVE"
+        )
 
     idem_row = None
     if idempotency_key:
@@ -359,10 +385,8 @@ def submit_evaluation(
             assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
             assert_user_is_reviewer(db, current_user, assignment)
 
-            # optimistic lock check
             assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
-            # ✅ submit: full required + rules + references (validate stored responses, not payload)
             rows = (
                 db.query(EvaluationResponse)
                 .filter(EvaluationResponse.evaluation_id == e.id)
@@ -375,7 +399,9 @@ def submit_evaluation(
                 out = eval_to_out(e)
             else:
                 if e.status != "DRAFT":
-                    raise HTTPException(status_code=409, detail="Only DRAFT evaluations can be submitted")
+                    raise HTTPException(
+                        status_code=409, detail="Only DRAFT evaluations can be submitted"
+                    )
 
                 prev = e.status
                 e.status = "SUBMITTED"
@@ -413,13 +439,11 @@ def submit_evaluation(
 
     except StaleDataError:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise
 
 
@@ -437,7 +461,9 @@ def return_evaluation(
 
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be returned while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Evaluations can only be returned while cycle is ACTIVE"
+        )
 
     idem_row = None
     if idempotency_key:
@@ -466,7 +492,9 @@ def return_evaluation(
                 out = eval_to_out(e)
             else:
                 if e.status != "SUBMITTED":
-                    raise HTTPException(status_code=409, detail="Only SUBMITTED evaluations can be returned")
+                    raise HTTPException(
+                        status_code=409, detail="Only SUBMITTED evaluations can be returned"
+                    )
 
                 prev = e.status
                 e.status = "RETURNED"
@@ -503,13 +531,11 @@ def return_evaluation(
 
     except StaleDataError:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise
 
 
@@ -527,7 +553,9 @@ def approve_evaluation(
 
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be approved while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Evaluations can only be approved while cycle is ACTIVE"
+        )
 
     idem_row = None
     if idempotency_key:
@@ -556,7 +584,9 @@ def approve_evaluation(
                 out = eval_to_out(e)
             else:
                 if e.status != "SUBMITTED":
-                    raise HTTPException(status_code=409, detail="Only SUBMITTED evaluations can be approved")
+                    raise HTTPException(
+                        status_code=409, detail="Only SUBMITTED evaluations can be approved"
+                    )
 
                 prev = e.status
                 e.status = "APPROVED"
@@ -594,11 +624,9 @@ def approve_evaluation(
 
     except StaleDataError:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise HTTPException(status_code=409, detail="Stale version")
     except Exception:
         if idem_row:
-            with db.begin_nested():
-                fail_idempotent_request(db=db, row=idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
         raise
