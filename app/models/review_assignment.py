@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import ForeignKey, DateTime, String, UniqueConstraint, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
+import sqlalchemy as sa
 
 from app.db.base import Base
 
@@ -25,4 +26,14 @@ class ReviewAssignment(Base):
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE")
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+        onupdate=datetime.utcnow,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    )
