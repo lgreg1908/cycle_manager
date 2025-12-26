@@ -4,6 +4,7 @@ from datetime import datetime, date
 from sqlalchemy import String, Date, DateTime, ForeignKey, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
+import sqlalchemy as sa
 
 from app.db.base import Base
 
@@ -31,10 +32,17 @@ class ReviewCycle(Base):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    form_template_id: Mapped[str | None] = mapped_column(
+    form_template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("form_templates.id", ondelete="SET NULL"),
         nullable=True,
+)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+        onupdate=datetime.utcnow,
+    )
