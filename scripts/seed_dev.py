@@ -4,6 +4,9 @@ from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
+from dotenv import load_dotenv
+load_dotenv(".env")  # force dev env for this script
+
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.models.employee import Employee
@@ -335,8 +338,11 @@ def get_or_create_assignment(
 
 
 # ---------- main ----------
+from app.core.config import settings
 
 def main():
+    print(f"[seed_dev] APP_ENV={settings.APP_ENV}")
+    print(f"[seed_dev] DATABASE_URL={settings.DATABASE_URL}")
     db = SessionLocal()
     try:
         # ---- Roles ----
