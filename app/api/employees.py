@@ -1,11 +1,14 @@
+from typing import Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.employee import Employee
 from app.models.user import User
 from app.schemas.employee import EmployeeOut, EmployeeWithUserOut
+from app.schemas.pagination import PaginatedResponse, PaginationMeta
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -28,16 +31,19 @@ def employee_to_out(e: Employee, include_user: bool = False) -> EmployeeOut | Em
     )
 
 
-@router.get("", response_model=list[EmployeeOut])
+@router.get("")
 def list_employees(
     search: str | None = Query(default=None, description="Search by employee number or display name"),
     limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    include_pagination: bool = Query(default=False, description="Include pagination metadata"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """
     List all employees with optional search and pagination.
+    
+    Use ?include_pagination=true to get pagination metadata.
     """
     query = db.query(Employee)
 
@@ -48,8 +54,24 @@ def list_employees(
             | (Employee.display_name.ilike(search_term))
         )
 
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination
     employees = query.order_by(Employee.display_name.asc()).offset(offset).limit(limit).all()
-    return [employee_to_out(e) for e in employees]
+    items = [employee_to_out(e) for e in employees]
+    
+    if include_pagination:
+        return PaginatedResponse(
+            items=items,
+            pagination=PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_more=(offset + len(items) < total),
+            ),
+        )
+    return items
 
 
 @router.get("/{employee_id}", response_model=EmployeeWithUserOut)

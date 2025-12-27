@@ -1,6 +1,8 @@
+from typing import Union
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.security import get_current_user
 from app.core.rbac import require_roles
@@ -9,6 +11,7 @@ from app.models.review_cycle import ReviewCycle
 from app.models.user import User
 from app.models.form_template import FormTemplate
 from app.schemas.review_cycle import ReviewCycleCreate, ReviewCycleUpdate, ReviewCycleOut
+from app.schemas.pagination import PaginatedResponse, PaginationMeta
 from app.core.audit import log_event
 
 router = APIRouter(prefix="/cycles", tags=["review-cycles"])
@@ -28,17 +31,20 @@ def to_out(c: ReviewCycle) -> ReviewCycleOut:
     )
 
 
-@router.get("", response_model=list[ReviewCycleOut])
+@router.get("")
 def list_cycles(
     search: str | None = Query(default=None, description="Search by name"),
     status: str | None = Query(default=None, description="Filter by status (DRAFT, ACTIVE, CLOSED, ARCHIVED)"),
     limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    include_pagination: bool = Query(default=False, description="Include pagination metadata"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """
     List all review cycles with optional search and filtering.
+    
+    Use ?include_pagination=true to get pagination metadata.
     """
     query = db.query(ReviewCycle)
     
@@ -49,8 +55,24 @@ def list_cycles(
     if status:
         query = query.filter(ReviewCycle.status == status)
     
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination
     cycles = query.order_by(ReviewCycle.created_at.desc()).offset(offset).limit(limit).all()
-    return [to_out(c) for c in cycles]
+    items = [to_out(c) for c in cycles]
+    
+    if include_pagination:
+        return PaginatedResponse(
+            items=items,
+            pagination=PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_more=(offset + len(items) < total),
+            ),
+        )
+    return items
 
 
 @router.get("/{cycle_id}", response_model=ReviewCycleOut)

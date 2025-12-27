@@ -1,9 +1,11 @@
+from typing import Union
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Response, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy import func
 
 from app.core.access import assert_user_is_approver, assert_user_is_reviewer, get_employee_for_user
 from app.core.audit import log_event
@@ -30,6 +32,8 @@ from app.schemas.evaluation import (
     EvaluationWithResponsesOut,
     SaveDraftPayload,
 )
+from app.schemas.expanded import EvaluationOutExpanded
+from app.schemas.pagination import PaginatedResponse, PaginationMeta
 
 router = APIRouter(prefix="/cycles/{cycle_id}", tags=["evaluations"])
 
@@ -185,7 +189,28 @@ def create_or_get_evaluation(
         raise
 
 
-@router.get("/evaluations", response_model=list[EvaluationOut])
+def _eval_to_out_expanded(e: Evaluation, assignment: ReviewAssignment | None, reviewer: Employee | None, subject: Employee | None, approver: Employee | None) -> EvaluationOutExpanded:
+    """Convert evaluation to expanded format with assignment context"""
+    return EvaluationOutExpanded(
+        id=str(e.id),
+        cycle_id=str(e.cycle_id),
+        assignment_id=str(e.assignment_id),
+        status=e.status,
+        submitted_at=e.submitted_at.isoformat() if e.submitted_at else None,
+        approved_at=e.approved_at.isoformat() if e.approved_at else None,
+        created_at=e.created_at.isoformat() if e.created_at else "",
+        updated_at=e.updated_at.isoformat() if e.updated_at else "",
+        version=e.version,
+        reviewer_employee_id=str(assignment.reviewer_employee_id) if assignment else None,
+        reviewer_name=reviewer.display_name if reviewer else None,
+        subject_employee_id=str(assignment.subject_employee_id) if assignment else None,
+        subject_name=subject.display_name if subject else None,
+        approver_employee_id=str(assignment.approver_employee_id) if assignment else None,
+        approver_name=approver.display_name if approver else None,
+    )
+
+
+@router.get("/evaluations")
 def list_evaluations(
     cycle_id: str,
     assignment_id: str | None = Query(default=None, description="Filter by assignment ID"),
@@ -193,14 +218,19 @@ def list_evaluations(
     reviewer_employee_id: str | None = Query(default=None, description="Filter by reviewer employee ID"),
     approver_employee_id: str | None = Query(default=None, description="Filter by approver employee ID"),
     subject_employee_id: str | None = Query(default=None, description="Filter by subject employee ID"),
+    expand: str | None = Query(default=None, description="Comma-separated list: 'employees' to include employee names"),
     limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    include_pagination: bool = Query(default=False, description="Include pagination metadata"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """
-    List evaluations in a cycle with optional filters.
+    List evaluations in a cycle with optional filters, pagination, and employee name expansion.
     Non-admin users can only see evaluations they're involved in (as reviewer, approver, or subject).
+    
+    Use ?expand=employees to include employee names in the response.
+    Use ?include_pagination=true to get pagination metadata.
     """
     cycle = _get_cycle_or_404(db, cycle_id)
     
@@ -223,6 +253,10 @@ def list_evaluations(
     if "ADMIN" not in role_names:
         needs_join = True
     
+    expand_employees = expand and "employees" in expand.split(",")
+    if expand_employees:
+        needs_join = True  # Need assignment to get employee IDs
+    
     # Join with assignments if needed
     if needs_join:
         query = query.join(ReviewAssignment, ReviewAssignment.id == Evaluation.assignment_id)
@@ -240,16 +274,62 @@ def list_evaluations(
             employee = get_employee_for_user(db, user)
             if not employee:
                 # User has no employee record, return empty
+                if include_pagination:
+                    return PaginatedResponse(
+                        items=[],
+                        pagination=PaginationMeta(total=0, limit=limit, offset=offset, has_more=False),
+                    )
                 return []
-            
-            query = query.filter(
-                (ReviewAssignment.reviewer_employee_id == employee.id)
-                | (ReviewAssignment.approver_employee_id == employee.id)
-                | (ReviewAssignment.subject_employee_id == employee.id)
-            )
     
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination
     evaluations = query.order_by(Evaluation.created_at.desc()).offset(offset).limit(limit).all()
-    return [eval_to_out(e) for e in evaluations]
+    
+    # Expand employees if requested
+    if expand_employees:
+        # Get assignments for evaluations
+        assignment_ids = [str(e.assignment_id) for e in evaluations]
+        assignments = {str(a.id): a for a in db.query(ReviewAssignment).filter(ReviewAssignment.id.in_(assignment_ids)).all()}
+        
+        # Collect employee IDs
+        employee_ids = set()
+        for e in evaluations:
+            a = assignments.get(str(e.assignment_id))
+            if a:
+                employee_ids.add(a.reviewer_employee_id)
+                employee_ids.add(a.subject_employee_id)
+                employee_ids.add(a.approver_employee_id)
+        
+        # Batch load employees
+        employees = {str(e.id): e for e in db.query(Employee).filter(Employee.id.in_(list(employee_ids))).all()}
+        
+        # Build expanded responses
+        items = [
+            _eval_to_out_expanded(
+                e,
+                assignments.get(str(e.assignment_id)),
+                employees.get(str(assignments.get(str(e.assignment_id)).reviewer_employee_id)) if assignments.get(str(e.assignment_id)) else None,
+                employees.get(str(assignments.get(str(e.assignment_id)).subject_employee_id)) if assignments.get(str(e.assignment_id)) else None,
+                employees.get(str(assignments.get(str(e.assignment_id)).approver_employee_id)) if assignments.get(str(e.assignment_id)) else None,
+            )
+            for e in evaluations
+        ]
+    else:
+        items = [eval_to_out(e) for e in evaluations]
+    
+    if include_pagination:
+        return PaginatedResponse(
+            items=items,
+            pagination=PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_more=(offset + len(items) < total),
+            ),
+        )
+    return items
 
 
 @router.get("/evaluations/{evaluation_id}", response_model=EvaluationWithResponsesOut)

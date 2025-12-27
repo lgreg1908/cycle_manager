@@ -11,5 +11,13 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "local"
     DATABASE_URL: str
+    CORS_ORIGINS: str = "*"  # Comma-separated list of allowed origins, or "*" for all
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse CORS_ORIGINS into a list, handling '*' for development"""
+        if self.CORS_ORIGINS == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
 settings = Settings()
