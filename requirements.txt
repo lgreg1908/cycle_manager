@@ -15,3 +15,6 @@ pytest-asyncio==0.25.0
 httpx==0.28.1
 
 streamlit==1.39.0
+
+jupyter>=7.0.0
+ipykernel>=7.0.0
