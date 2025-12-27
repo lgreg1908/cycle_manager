@@ -22,6 +22,7 @@ def to_out(c: ReviewCycle) -> ReviewCycleOut:
         end_date=c.end_date,
         status=c.status,
         created_by_user_id=str(c.created_by_user_id),
+        form_template_id=str(c.form_template_id) if c.form_template_id else None,
         created_at=c.created_at,
         updated_at=c.updated_at,
     )

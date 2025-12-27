@@ -21,5 +21,6 @@ class ReviewCycleOut(BaseModel):
     end_date: date | None
     status: str
     created_by_user_id: str
+    form_template_id: str | None = None
     created_at: datetime
     updated_at: datetime

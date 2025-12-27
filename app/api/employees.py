@@ -108,3 +108,4 @@ def quick_search_employees(
     
     return [employee_to_out(e) for e in exact_matches + partial_matches]
 
+

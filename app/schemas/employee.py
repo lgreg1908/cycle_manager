@@ -15,3 +15,4 @@ class EmployeeWithUserOut(EmployeeOut):
     user_email: str | None = None
     user_full_name: str | None = None
 
+
