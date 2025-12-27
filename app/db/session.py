@@ -5,12 +5,20 @@ from app.core.config import settings
 
 engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
 
 def get_db():
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

@@ -1,7 +1,9 @@
 import uuid
-from sqlalchemy import String, Boolean
+from datetime import datetime
+from sqlalchemy import String, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
+import sqlalchemy as sa
 
 from app.db.base import Base
 
@@ -15,3 +17,6 @@ class User(Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    created_at = mapped_column(DateTime(timezone=True), server_default=sa.text("now()"), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), server_default=sa.text("now()"), onupdate=datetime.utcnow, nullable=False)

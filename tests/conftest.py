@@ -19,7 +19,6 @@ _assert_test_db(settings.DATABASE_URL)
 
 engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
-# Note: do NOT bind this to the engine here; we'll bind to a per-test connection.
 TestingSessionLocal = sessionmaker(
     class_=Session,
     autocommit=False,
@@ -37,36 +36,56 @@ def create_test_schema():
 
 
 @pytest.fixture()
-def db_session():
+def db_connection():
     """
-    SQLAlchemy 2.0 best practice for tests:
-
-    - Start ONE outer transaction per test (never committed).
-    - Use join_transaction_mode="create_savepoint" so any app/session.commit()
-      becomes a SAVEPOINT release, not a real commit of the outer transaction.
-    - At the end of the test, we rollback the outer transaction -> clean DB.
+    One connection + one outer transaction per test.
+    Everything runs inside this transaction and gets rolled back at the end.
     """
     connection = engine.connect()
     outer_tx = connection.begin()
-
-    session = TestingSessionLocal(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-    )
-
     try:
-        yield session
+        yield connection
     finally:
-        session.close()
-        # Outer transaction is always safe to rollback here
         outer_tx.rollback()
         connection.close()
 
 
+@pytest.fixture()
+def db_session(db_connection):
+    """
+    Session for seeding inside the test (not used by the API requests).
+    """
+    session = TestingSessionLocal(
+        bind=db_connection,
+        join_transaction_mode="create_savepoint",
+    )
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 @pytest.fixture(autouse=True)
-def override_get_db(db_session):
+def override_get_db(db_connection):
+    """
+    FastAPI dependency override: create a NEW Session per request
+    (still bound to the same per-test connection/outer transaction).
+
+    IMPORTANT: commit on success so the test session can see rows.
+    """
     def _get_db_override():
-        yield db_session
+        db = TestingSessionLocal(
+            bind=db_connection,
+            join_transaction_mode="create_savepoint",
+        )
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     app.dependency_overrides[get_db] = _get_db_override
     yield

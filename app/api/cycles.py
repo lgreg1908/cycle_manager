@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
@@ -7,6 +7,7 @@ from app.core.rbac import require_roles
 from app.db.session import get_db
 from app.models.review_cycle import ReviewCycle
 from app.models.user import User
+from app.models.form_template import FormTemplate
 from app.schemas.review_cycle import ReviewCycleCreate, ReviewCycleUpdate, ReviewCycleOut
 from app.core.audit import log_event
 
@@ -28,10 +29,26 @@ def to_out(c: ReviewCycle) -> ReviewCycleOut:
 
 @router.get("", response_model=list[ReviewCycleOut])
 def list_cycles(
+    search: str | None = Query(default=None, description="Search by name"),
+    status: str | None = Query(default=None, description="Filter by status (DRAFT, ACTIVE, CLOSED, ARCHIVED)"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    cycles = db.query(ReviewCycle).order_by(ReviewCycle.created_at.desc()).all()
+    """
+    List all review cycles with optional search and filtering.
+    """
+    query = db.query(ReviewCycle)
+    
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(ReviewCycle.name.ilike(search_term))
+    
+    if status:
+        query = query.filter(ReviewCycle.status == status)
+    
+    cycles = query.order_by(ReviewCycle.created_at.desc()).offset(offset).limit(limit).all()
     return [to_out(c) for c in cycles]
 
 
@@ -59,9 +76,8 @@ def create_cycle(
         end_date=payload.end_date,
         status="DRAFT",
         created_by_user_id=current_user.id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
     )
+
     db.add(c)
     db.flush()  # ensures c.id exists for audit
 
@@ -111,8 +127,6 @@ def update_cycle(
         c.start_date = payload.start_date
     if payload.end_date is not None:
         c.end_date = payload.end_date
-
-    c.updated_at = datetime.utcnow()
 
     log_event(
         db=db,
@@ -190,7 +204,6 @@ def close_cycle(
 
     prev = c.status
     c.status = "CLOSED"
-    c.updated_at = datetime.utcnow()
 
     log_event(
         db=db,
@@ -199,6 +212,40 @@ def close_cycle(
         entity_type="review_cycle",
         entity_id=c.id,
         metadata={"from": prev, "to": c.status},
+    )
+
+    db.commit()
+    db.refresh(c)
+    return to_out(c)
+
+
+@router.post("/{cycle_id}/set-form/{form_template_id}", response_model=ReviewCycleOut)
+def set_cycle_form_template(
+    cycle_id: str,
+    form_template_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("ADMIN")),
+):
+    c = db.get(ReviewCycle, cycle_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    form = db.get(FormTemplate, form_template_id)
+    if not form or not form.is_active:
+        raise HTTPException(status_code=404, detail="Form template not found or inactive")
+
+    before = {"form_template_id": str(c.form_template_id) if c.form_template_id else None}
+
+    c.form_template_id = form.id
+    c.updated_at = datetime.utcnow()
+
+    log_event(
+        db=db,
+        actor=current_user,
+        action="CYCLE_FORM_TEMPLATE_SET",
+        entity_type="review_cycle",
+        entity_id=c.id,
+        metadata={"before": before, "after": {"form_template_id": str(form.id)}},
     )
 
     db.commit()

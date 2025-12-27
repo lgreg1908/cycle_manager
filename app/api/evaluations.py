@@ -1,27 +1,35 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Header, status
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
 
-from app.core.security import get_current_user
-from app.core.access import assert_user_is_reviewer, assert_user_is_approver
+from fastapi import APIRouter, Depends, HTTPException, Header, Response, Query
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
+
+from app.core.access import assert_user_is_approver, assert_user_is_reviewer, get_employee_for_user
+from app.core.audit import log_event
+from app.core.evaluation_form_validation import (
+    validate_draft_payload,
+    validate_submit_from_db,
+)
 from app.core.idempotency import (
     begin_idempotent_request,
     complete_idempotent_request,
     fail_idempotent_request,
 )
+from app.core.optimistic_lock import assert_version_matches, parse_if_match, set_etag
+from app.core.security import get_current_user
 from app.db.session import get_db
-from app.models.user import User
-from app.models.review_cycle import ReviewCycle
-from app.models.review_assignment import ReviewAssignment
 from app.models.evaluation import Evaluation
 from app.models.evaluation_response import EvaluationResponse
+from app.models.review_assignment import ReviewAssignment
+from app.models.review_cycle import ReviewCycle
+from app.models.user import User
+from app.models.employee import Employee
 from app.schemas.evaluation import (
     EvaluationOut,
     EvaluationWithResponsesOut,
     SaveDraftPayload,
 )
-from app.core.audit import log_event
 
 router = APIRouter(prefix="/cycles/{cycle_id}", tags=["evaluations"])
 
@@ -59,14 +67,18 @@ def _get_cycle_or_404(db: Session, cycle_id: str) -> ReviewCycle:
     return cycle
 
 
-def _get_assignment_in_cycle_or_404(db: Session, cycle_id: str, assignment_id: str) -> ReviewAssignment:
+def _get_assignment_in_cycle_or_404(
+    db: Session, cycle_id: str, assignment_id: str
+) -> ReviewAssignment:
     assignment = db.get(ReviewAssignment, assignment_id)
     if not assignment or str(assignment.cycle_id) != cycle_id:
         raise HTTPException(status_code=404, detail="Assignment not found in this cycle")
     return assignment
 
 
-def _lock_evaluation_in_cycle_or_404(db: Session, cycle_id: str, evaluation_id: str) -> Evaluation:
+def _lock_evaluation_in_cycle_or_404(
+    db: Session, cycle_id: str, evaluation_id: str
+) -> Evaluation:
     e = (
         db.query(Evaluation)
         .filter(Evaluation.id == evaluation_id)
@@ -78,7 +90,11 @@ def _lock_evaluation_in_cycle_or_404(db: Session, cycle_id: str, evaluation_id: 
     return e
 
 
-@router.post("/assignments/{assignment_id}/evaluation", response_model=EvaluationOut, status_code=201)
+@router.post(
+    "/assignments/{assignment_id}/evaluation",
+    response_model=EvaluationOut,
+    status_code=201,
+)
 def create_or_get_evaluation(
     cycle_id: str,
     assignment_id: str,
@@ -88,12 +104,14 @@ def create_or_get_evaluation(
 ):
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be created/edited while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409,
+            detail="Evaluations can only be created/edited while cycle is ACTIVE",
+        )
 
     assignment = _get_assignment_in_cycle_or_404(db, cycle_id, assignment_id)
     assert_user_is_reviewer(db, user, assignment)
 
-    # If caller supplies Idempotency-Key, we’ll guarantee no duplicate audit spam.
     idem_row = None
     if idempotency_key:
         idem_row, _ = begin_idempotent_request(
@@ -101,34 +119,40 @@ def create_or_get_evaluation(
             user=user,
             key=idempotency_key,
             method="POST",
-            route=f"/cycles/{cycle_id}/assignments/{assignment_id}/evaluation",
+            route="/cycles/{cycle_id}/assignments/{assignment_id}/evaluation",
             payload_for_hash={"cycle_id": cycle_id, "assignment_id": assignment_id},
         )
         if idem_row.status == "COMPLETED":
-            # previously completed; return exact response
             return EvaluationOut(**idem_row.response_body)
 
     try:
-        existing = db.query(Evaluation).filter(Evaluation.assignment_id == assignment.id).one_or_none()
+        existing = (
+            db.query(Evaluation)
+            .filter(Evaluation.assignment_id == assignment.id)
+            .one_or_none()
+        )
         if existing:
             out = eval_to_out(existing)
         else:
-            e = Evaluation(
-                cycle_id=assignment.cycle_id,
-                assignment_id=assignment.id,
-                status="DRAFT",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
-            )
-            db.add(e)
+            # Use a SAVEPOINT for the insert so an IntegrityError doesn't poison the whole txn.
             try:
-                db.commit()
+                with db.begin_nested():
+                    e = Evaluation(
+                        cycle_id=assignment.cycle_id,
+                        assignment_id=assignment.id,
+                        status="DRAFT"
+                    )
+                    db.add(e)
+                    db.flush()  # may raise IntegrityError if unique constraint hits
             except IntegrityError:
-                db.rollback()
-                e = db.query(Evaluation).filter(Evaluation.assignment_id == assignment.id).one()
-                out = eval_to_out(e)
+                # Savepoint rolled back; safe to query now.
+                existing = (
+                    db.query(Evaluation)
+                    .filter(Evaluation.assignment_id == assignment.id)
+                    .one()
+                )
+                out = eval_to_out(existing)
             else:
-                db.refresh(e)
                 log_event(
                     db=db,
                     actor=user,
@@ -141,24 +165,98 @@ def create_or_get_evaluation(
                         "status": e.status,
                     },
                 )
-                db.commit()
                 out = eval_to_out(e)
 
         if idem_row:
-            complete_idempotent_request(db=db, row=idem_row, response_code=201, response_body=out.model_dump())
+            complete_idempotent_request(
+                db=db,
+                row=idem_row,
+                response_code=201,
+                response_body=out.model_dump(mode="json"),
+            )
 
         return out
 
     except Exception:
         if idem_row:
-            fail_idempotent_request(db, idem_row)
+            # Best-effort: mark idempotency failed within current session/txn.
+            # (Commit/rollback is handled by get_db / test override.)
+            fail_idempotent_request(db=db, row=idem_row)
         raise
+
+
+@router.get("/evaluations", response_model=list[EvaluationOut])
+def list_evaluations(
+    cycle_id: str,
+    assignment_id: str | None = Query(default=None, description="Filter by assignment ID"),
+    status: str | None = Query(default=None, description="Filter by status (DRAFT, SUBMITTED, APPROVED, RETURNED)"),
+    reviewer_employee_id: str | None = Query(default=None, description="Filter by reviewer employee ID"),
+    approver_employee_id: str | None = Query(default=None, description="Filter by approver employee ID"),
+    subject_employee_id: str | None = Query(default=None, description="Filter by subject employee ID"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    List evaluations in a cycle with optional filters.
+    Non-admin users can only see evaluations they're involved in (as reviewer, approver, or subject).
+    """
+    cycle = _get_cycle_or_404(db, cycle_id)
+    
+    query = db.query(Evaluation).filter(Evaluation.cycle_id == cycle.id)
+    
+    # Apply filters
+    if assignment_id:
+        query = query.filter(Evaluation.assignment_id == assignment_id)
+    if status:
+        query = query.filter(Evaluation.status == status)
+    
+    # Determine if we need to join with assignments
+    needs_join = False
+    if reviewer_employee_id or approver_employee_id or subject_employee_id:
+        needs_join = True
+    
+    # Non-admin users: filter to only their evaluations
+    from app.core.rbac import get_user_role_names
+    role_names = get_user_role_names(db, user)
+    if "ADMIN" not in role_names:
+        needs_join = True
+    
+    # Join with assignments if needed
+    if needs_join:
+        query = query.join(ReviewAssignment, ReviewAssignment.id == Evaluation.assignment_id)
+        
+        # Employee filters
+        if reviewer_employee_id:
+            query = query.filter(ReviewAssignment.reviewer_employee_id == reviewer_employee_id)
+        if approver_employee_id:
+            query = query.filter(ReviewAssignment.approver_employee_id == approver_employee_id)
+        if subject_employee_id:
+            query = query.filter(ReviewAssignment.subject_employee_id == subject_employee_id)
+        
+        # Non-admin users: filter to only their evaluations
+        if "ADMIN" not in role_names:
+            employee = get_employee_for_user(db, user)
+            if not employee:
+                # User has no employee record, return empty
+                return []
+            
+            query = query.filter(
+                (ReviewAssignment.reviewer_employee_id == employee.id)
+                | (ReviewAssignment.approver_employee_id == employee.id)
+                | (ReviewAssignment.subject_employee_id == employee.id)
+            )
+    
+    evaluations = query.order_by(Evaluation.created_at.desc()).offset(offset).limit(limit).all()
+    return [eval_to_out(e) for e in evaluations]
 
 
 @router.get("/evaluations/{evaluation_id}", response_model=EvaluationWithResponsesOut)
 def get_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -173,21 +271,32 @@ def get_evaluation(
     except HTTPException:
         assert_user_is_approver(db, user, assignment)
 
-    return eval_to_out_with_responses(db, e)
-
+    out = eval_to_out_with_responses(db, e)
+    set_etag(response, out.version)
+    return out
 
 @router.post("/evaluations/{evaluation_id}/draft", response_model=EvaluationWithResponsesOut)
 def save_draft(
     cycle_id: str,
     evaluation_id: str,
     payload: SaveDraftPayload,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
+    # Require concurrency token
+    if expected_version is None:
+        raise HTTPException(status_code=428, detail="If-Match required")
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Drafts can only be edited while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Drafts can only be edited while cycle is ACTIVE"
+        )
 
     e = db.get(Evaluation, evaluation_id)
     if not e or str(e.cycle_id) != cycle_id:
@@ -199,6 +308,13 @@ def save_draft(
     assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
     assert_user_is_reviewer(db, current_user, assignment)
 
+    # ✅ draft: keys exist + type sanity only
+    validate_draft_payload(
+        db=db,
+        cycle=cycle,
+        responses=[r.model_dump() for r in payload.responses],
+    )
+
     idem_row = None
     if idempotency_key:
         idem_row, _ = begin_idempotent_request(
@@ -206,78 +322,116 @@ def save_draft(
             user=current_user,
             key=idempotency_key,
             method="POST",
-            route=f"/cycles/{cycle_id}/evaluations/{evaluation_id}/draft",
-            payload_for_hash={"evaluation_id": evaluation_id, "responses": [r.model_dump() for r in payload.responses]},
-        )
-        if idem_row.status == "COMPLETED":
-            return EvaluationWithResponsesOut(**idem_row.response_body)
-
-    try:
-        for r in payload.responses:
-            existing = (
-                db.query(EvaluationResponse)
-                .filter(
-                    EvaluationResponse.evaluation_id == e.id,
-                    EvaluationResponse.question_key == r.question_key,
-                )
-                .one_or_none()
-            )
-            if existing:
-                existing.value_text = r.value_text
-                existing.updated_at = datetime.utcnow()
-            else:
-                db.add(
-                    EvaluationResponse(
-                        evaluation_id=e.id,
-                        question_key=r.question_key,
-                        value_text=r.value_text,
-                        updated_at=datetime.utcnow(),
-                    )
-                )
-
-        e.updated_at = datetime.utcnow()
-
-        log_event(
-            db=db,
-            actor=current_user,
-            action="EVALUATION_DRAFT_SAVED",
-            entity_type="evaluation",
-            entity_id=e.id,
-            metadata={
-                "cycle_id": str(e.cycle_id),
-                "assignment_id": str(e.assignment_id),
-                "status": e.status,
-                "response_count": len(payload.responses),
+            route="/cycles/{cycle_id}/evaluations/{evaluation_id}/draft",
+            payload_for_hash={
+                "evaluation_id": evaluation_id,
+                "if_match": expected_version,
+                "responses": [r.model_dump() for r in payload.responses],
             },
         )
+        if idem_row.status == "COMPLETED":
+            out = EvaluationWithResponsesOut(**idem_row.response_body)
+            set_etag(response, out.version)
+            return out
 
-        db.commit()
-        db.refresh(e)
-        out = eval_to_out_with_responses(db, e)
+    try:
+        with db.begin_nested():
+            e2 = db.get(Evaluation, evaluation_id)
+            if not e2 or str(e2.cycle_id) != cycle_id:
+                raise HTTPException(status_code=404, detail="Evaluation not found")
 
-        if idem_row:
-            complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+            if e2.status != "DRAFT":
+                raise HTTPException(status_code=409, detail="Can only edit draft evaluations")
 
+            # optimistic lock check (fast failure)
+            assert_version_matches(
+                current_version=e2.version, if_match_version=expected_version
+            )
+
+            # upsert responses
+            for r in payload.responses:
+                existing = (
+                    db.query(EvaluationResponse)
+                    .filter(
+                        EvaluationResponse.evaluation_id == e2.id,
+                        EvaluationResponse.question_key == r.question_key,
+                    )
+                    .one_or_none()
+                )
+                if existing:
+                    existing.value_text = r.value_text
+                    # optional, since model has onupdate; harmless to keep
+                    existing.updated_at = datetime.utcnow()
+                else:
+                    db.add(
+                        EvaluationResponse(
+                            evaluation_id=e2.id,
+                            question_key=r.question_key,
+                            value_text=r.value_text,
+                            updated_at=datetime.utcnow(),
+                        )
+                    )
+
+            # IMPORTANT: touch parent row so version increments (optimistic locking)
+            e2.updated_at = datetime.utcnow()
+
+            db.flush()  # bumps version + ensures responses are queryable
+
+            log_event(
+                db=db,
+                actor=current_user,
+                action="EVALUATION_DRAFT_SAVED",
+                entity_type="evaluation",
+                entity_id=e2.id,
+                metadata={
+                    "cycle_id": str(e2.cycle_id),
+                    "assignment_id": str(e2.assignment_id),
+                    "status": e2.status,
+                    "response_count": len(payload.responses),
+                    "version": e2.version,
+                },
+            )
+
+            out = eval_to_out_with_responses(db, e2)
+
+            if idem_row:
+                complete_idempotent_request(
+                    db=db,
+                    row=idem_row,
+                    response_code=200,
+                    response_body=out.model_dump(mode="json"),
+                )
+
+        set_etag(response, out.version)
         return out
 
-    except Exception:
-        db.rollback()
+    except StaleDataError:
         if idem_row:
-            fail_idempotent_request(db, idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
+    except Exception:
+        if idem_row:
+            fail_idempotent_request(db=db, row=idem_row)
         raise
-
 
 @router.post("/evaluations/{evaluation_id}/submit", response_model=EvaluationOut)
 def submit_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be submitted while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409,
+            detail="Evaluations can only be submitted while cycle is ACTIVE",
+        )
 
     idem_row = None
     if idempotency_key:
@@ -286,53 +440,79 @@ def submit_evaluation(
             user=current_user,
             key=idempotency_key,
             method="POST",
-            route=f"/cycles/{cycle_id}/evaluations/{evaluation_id}/submit",
-            payload_for_hash={"evaluation_id": evaluation_id},
+            route="/cycles/{cycle_id}/evaluations/{evaluation_id}/submit",
+            payload_for_hash={"evaluation_id": evaluation_id, "if_match": expected_version},
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationOut(**idem_row.response_body)
-
-    try:
-        e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
-        assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
-        assert_user_is_reviewer(db, current_user, assignment)
-
-        if e.status == "SUBMITTED":
-            out = eval_to_out(e)
-            if idem_row:
-                complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+            out = EvaluationOut(**idem_row.response_body)
+            set_etag(response, out.version)
             return out
 
-        if e.status != "DRAFT":
-            raise HTTPException(status_code=409, detail="Only DRAFT evaluations can be submitted")
+    try:
+        with db.begin_nested():
+            e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
+            assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
+            assert_user_is_reviewer(db, current_user, assignment)
 
-        prev = e.status
-        e.status = "SUBMITTED"
-        e.submitted_at = datetime.utcnow()
-        e.updated_at = datetime.utcnow()
+            assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
-        log_event(
-            db=db,
-            actor=current_user,
-            action="EVALUATION_SUBMITTED",
-            entity_type="evaluation",
-            entity_id=e.id,
-            metadata={"cycle_id": str(e.cycle_id), "assignment_id": str(e.assignment_id), "from": prev, "to": e.status},
-        )
+            rows = (
+                db.query(EvaluationResponse)
+                .filter(EvaluationResponse.evaluation_id == e.id)
+                .all()
+            )
+            stored = {r.question_key: r.value_text for r in rows}
+            validate_submit_from_db(db=db, cycle=cycle, stored_responses=stored)
 
-        db.commit()
-        db.refresh(e)
-        out = eval_to_out(e)
+            if e.status == "SUBMITTED":
+                out = eval_to_out(e)
+            else:
+                if e.status != "DRAFT":
+                    raise HTTPException(
+                        status_code=409, detail="Only DRAFT evaluations can be submitted"
+                    )
 
-        if idem_row:
-            complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+                prev = e.status
+                e.status = "SUBMITTED"
+                e.submitted_at = datetime.utcnow()
+                e.updated_at = datetime.utcnow()
 
+                db.flush()  # bumps version
+
+                log_event(
+                    db=db,
+                    actor=current_user,
+                    action="EVALUATION_SUBMITTED",
+                    entity_type="evaluation",
+                    entity_id=e.id,
+                    metadata={
+                        "cycle_id": str(e.cycle_id),
+                        "assignment_id": str(e.assignment_id),
+                        "from": prev,
+                        "to": e.status,
+                        "version": e.version,
+                    },
+                )
+                out = eval_to_out(e)
+
+            if idem_row:
+                complete_idempotent_request(
+                    db=db,
+                    row=idem_row,
+                    response_code=200,
+                    response_body=out.model_dump(mode="json"),
+                )
+
+        set_etag(response, out.version)
         return out
 
-    except Exception:
-        db.rollback()
+    except StaleDataError:
         if idem_row:
-            fail_idempotent_request(db, idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
+    except Exception:
+        if idem_row:
+            fail_idempotent_request(db=db, row=idem_row)
         raise
 
 
@@ -340,13 +520,19 @@ def submit_evaluation(
 def return_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be returned while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Evaluations can only be returned while cycle is ACTIVE"
+        )
 
     idem_row = None
     if idempotency_key:
@@ -355,52 +541,70 @@ def return_evaluation(
             user=current_user,
             key=idempotency_key,
             method="POST",
-            route=f"/cycles/{cycle_id}/evaluations/{evaluation_id}/return",
-            payload_for_hash={"evaluation_id": evaluation_id},
+            route="/cycles/{cycle_id}/evaluations/{evaluation_id}/return",
+            payload_for_hash={"evaluation_id": evaluation_id, "if_match": expected_version},
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationOut(**idem_row.response_body)
-
-    try:
-        e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
-        assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
-        assert_user_is_approver(db, current_user, assignment)
-
-        if e.status == "RETURNED":
-            out = eval_to_out(e)
-            if idem_row:
-                complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+            out = EvaluationOut(**idem_row.response_body)
+            set_etag(response, out.version)
             return out
 
-        if e.status != "SUBMITTED":
-            raise HTTPException(status_code=409, detail="Only SUBMITTED evaluations can be returned")
+    try:
+        with db.begin_nested():
+            e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
+            assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
+            assert_user_is_approver(db, current_user, assignment)
 
-        prev = e.status
-        e.status = "RETURNED"
-        e.updated_at = datetime.utcnow()
+            assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
-        log_event(
-            db=db,
-            actor=current_user,
-            action="EVALUATION_RETURNED",
-            entity_type="evaluation",
-            entity_id=e.id,
-            metadata={"cycle_id": str(e.cycle_id), "assignment_id": str(e.assignment_id), "from": prev, "to": e.status},
-        )
+            if e.status == "RETURNED":
+                out = eval_to_out(e)
+            else:
+                if e.status != "SUBMITTED":
+                    raise HTTPException(
+                        status_code=409, detail="Only SUBMITTED evaluations can be returned"
+                    )
 
-        db.commit()
-        db.refresh(e)
-        out = eval_to_out(e)
+                prev = e.status
+                e.status = "RETURNED"
+                e.updated_at = datetime.utcnow()
 
-        if idem_row:
-            complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+                db.flush()  # bumps version
 
+                log_event(
+                    db=db,
+                    actor=current_user,
+                    action="EVALUATION_RETURNED",
+                    entity_type="evaluation",
+                    entity_id=e.id,
+                    metadata={
+                        "cycle_id": str(e.cycle_id),
+                        "assignment_id": str(e.assignment_id),
+                        "from": prev,
+                        "to": e.status,
+                        "version": e.version,
+                    },
+                )
+                out = eval_to_out(e)
+
+            if idem_row:
+                complete_idempotent_request(
+                    db=db,
+                    row=idem_row,
+                    response_code=200,
+                    response_body=out.model_dump(mode="json"),
+                )
+
+        set_etag(response, out.version)
         return out
 
-    except Exception:
-        db.rollback()
+    except StaleDataError:
         if idem_row:
-            fail_idempotent_request(db, idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
+    except Exception:
+        if idem_row:
+            fail_idempotent_request(db=db, row=idem_row)
         raise
 
 
@@ -408,13 +612,19 @@ def return_evaluation(
 def approve_evaluation(
     cycle_id: str,
     evaluation_id: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
 ):
+    expected_version = parse_if_match(if_match)
+
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
-        raise HTTPException(status_code=409, detail="Evaluations can only be approved while cycle is ACTIVE")
+        raise HTTPException(
+            status_code=409, detail="Evaluations can only be approved while cycle is ACTIVE"
+        )
 
     idem_row = None
     if idempotency_key:
@@ -423,51 +633,69 @@ def approve_evaluation(
             user=current_user,
             key=idempotency_key,
             method="POST",
-            route=f"/cycles/{cycle_id}/evaluations/{evaluation_id}/approve",
-            payload_for_hash={"evaluation_id": evaluation_id},
+            route="/cycles/{cycle_id}/evaluations/{evaluation_id}/approve",
+            payload_for_hash={"evaluation_id": evaluation_id, "if_match": expected_version},
         )
         if idem_row.status == "COMPLETED":
-            return EvaluationOut(**idem_row.response_body)
-
-    try:
-        e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
-        assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
-        assert_user_is_approver(db, current_user, assignment)
-
-        if e.status == "APPROVED":
-            out = eval_to_out(e)
-            if idem_row:
-                complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+            out = EvaluationOut(**idem_row.response_body)
+            set_etag(response, out.version)
             return out
 
-        if e.status != "SUBMITTED":
-            raise HTTPException(status_code=409, detail="Only SUBMITTED evaluations can be approved")
+    try:
+        with db.begin_nested():
+            e = _lock_evaluation_in_cycle_or_404(db, cycle_id, evaluation_id)
+            assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(e.assignment_id))
+            assert_user_is_approver(db, current_user, assignment)
 
-        prev = e.status
-        e.status = "APPROVED"
-        e.approved_at = datetime.utcnow()
-        e.updated_at = datetime.utcnow()
+            assert_version_matches(current_version=e.version, if_match_version=expected_version)
 
-        log_event(
-            db=db,
-            actor=current_user,
-            action="EVALUATION_APPROVED",
-            entity_type="evaluation",
-            entity_id=e.id,
-            metadata={"cycle_id": str(e.cycle_id), "assignment_id": str(e.assignment_id), "from": prev, "to": e.status},
-        )
+            if e.status == "APPROVED":
+                out = eval_to_out(e)
+            else:
+                if e.status != "SUBMITTED":
+                    raise HTTPException(
+                        status_code=409, detail="Only SUBMITTED evaluations can be approved"
+                    )
 
-        db.commit()
-        db.refresh(e)
-        out = eval_to_out(e)
+                prev = e.status
+                e.status = "APPROVED"
+                e.approved_at = datetime.utcnow()
+                e.updated_at = datetime.utcnow()
 
-        if idem_row:
-            complete_idempotent_request(db=db, row=idem_row, response_code=200, response_body=out.model_dump())
+                db.flush()  # bumps version
 
+                log_event(
+                    db=db,
+                    actor=current_user,
+                    action="EVALUATION_APPROVED",
+                    entity_type="evaluation",
+                    entity_id=e.id,
+                    metadata={
+                        "cycle_id": str(e.cycle_id),
+                        "assignment_id": str(e.assignment_id),
+                        "from": prev,
+                        "to": e.status,
+                        "version": e.version,
+                    },
+                )
+                out = eval_to_out(e)
+
+            if idem_row:
+                complete_idempotent_request(
+                    db=db,
+                    row=idem_row,
+                    response_code=200,
+                    response_body=out.model_dump(mode="json"),
+                )
+
+        set_etag(response, out.version)
         return out
 
-    except Exception:
-        db.rollback()
+    except StaleDataError:
         if idem_row:
-            fail_idempotent_request(db, idem_row)
+            fail_idempotent_request(db=db, row=idem_row)
+        raise HTTPException(status_code=409, detail="Stale version")
+    except Exception:
+        if idem_row:
+            fail_idempotent_request(db=db, row=idem_row)
         raise

@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, CheckConstraint
+import sqlalchemy as sa
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, CheckConstraint, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +17,8 @@ class IdempotencyKey(Base):
             "status IN ('IN_PROGRESS','COMPLETED','FAILED')",
             name="ck_idempotency_status",
         ),
+        Index("ix_idem_user_key", "user_id", "key"),
+        Index("ix_idem_status_updated", "status", "updated_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -31,10 +34,24 @@ class IdempotencyKey(Base):
 
     request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="IN_PROGRESS")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=sa.text("'IN_PROGRESS'"))
 
-    response_code: Mapped[int | None] = mapped_column(nullable=True)
+    response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_body: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+        onupdate=datetime.utcnow,   # app-side update stamp
+    )
+    
+    # NEW: safe purge boundary (nullable so you can keep forever if you want)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
