@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -86,10 +86,22 @@ def create_field_definition(
 
 @router.get("/fields", response_model=list[FieldDefinitionOut])
 def list_field_definitions(
+    search: str | None = Query(default=None, description="Search by key or label"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("ADMIN")),
 ):
-    rows = db.query(FieldDefinition).order_by(FieldDefinition.created_at.desc()).all()
+    query = db.query(FieldDefinition)
+    
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(
+            (FieldDefinition.key.ilike(search_term))
+            | (FieldDefinition.label.ilike(search_term))
+        )
+    
+    rows = query.order_by(FieldDefinition.created_at.desc()).offset(offset).limit(limit).all()
     return [_field_out(r) for r in rows]
 
 
@@ -214,6 +226,34 @@ def attach_fields_to_form(
         is_active=form.is_active,
         fields=fields_out,
     )
+
+
+@router.get("", response_model=list[FormTemplateOut])
+def list_form_templates(
+    search: str | None = Query(default=None, description="Search by name or description"),
+    is_active: bool | None = Query(default=None, description="Filter by active status"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("ADMIN")),
+):
+    """
+    List all form templates with optional search and filtering.
+    """
+    query = db.query(FormTemplate)
+    
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(
+            (FormTemplate.name.ilike(search_term))
+            | (FormTemplate.description.ilike(search_term))
+        )
+    
+    if is_active is not None:
+        query = query.filter(FormTemplate.is_active == is_active)
+    
+    forms = query.order_by(FormTemplate.created_at.desc()).offset(offset).limit(limit).all()
+    return [_form_out(f) for f in forms]
 
 
 @router.get("/{form_id}", response_model=FormTemplateWithFieldsOut)

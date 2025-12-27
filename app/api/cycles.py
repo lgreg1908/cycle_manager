@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
@@ -29,10 +29,26 @@ def to_out(c: ReviewCycle) -> ReviewCycleOut:
 
 @router.get("", response_model=list[ReviewCycleOut])
 def list_cycles(
+    search: str | None = Query(default=None, description="Search by name"),
+    status: str | None = Query(default=None, description="Filter by status (DRAFT, ACTIVE, CLOSED, ARCHIVED)"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    cycles = db.query(ReviewCycle).order_by(ReviewCycle.created_at.desc()).all()
+    """
+    List all review cycles with optional search and filtering.
+    """
+    query = db.query(ReviewCycle)
+    
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(ReviewCycle.name.ilike(search_term))
+    
+    if status:
+        query = query.filter(ReviewCycle.status == status)
+    
+    cycles = query.order_by(ReviewCycle.created_at.desc()).offset(offset).limit(limit).all()
     return [to_out(c) for c in cycles]
 
 

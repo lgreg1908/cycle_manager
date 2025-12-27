@@ -1,11 +1,11 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Response
+from fastapi import APIRouter, Depends, HTTPException, Header, Response, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.core.access import assert_user_is_approver, assert_user_is_reviewer
+from app.core.access import assert_user_is_approver, assert_user_is_reviewer, get_employee_for_user
 from app.core.audit import log_event
 from app.core.evaluation_form_validation import (
     validate_draft_payload,
@@ -24,6 +24,7 @@ from app.models.evaluation_response import EvaluationResponse
 from app.models.review_assignment import ReviewAssignment
 from app.models.review_cycle import ReviewCycle
 from app.models.user import User
+from app.models.employee import Employee
 from app.schemas.evaluation import (
     EvaluationOut,
     EvaluationWithResponsesOut,
@@ -182,6 +183,73 @@ def create_or_get_evaluation(
             # (Commit/rollback is handled by get_db / test override.)
             fail_idempotent_request(db=db, row=idem_row)
         raise
+
+
+@router.get("/evaluations", response_model=list[EvaluationOut])
+def list_evaluations(
+    cycle_id: str,
+    assignment_id: str | None = Query(default=None, description="Filter by assignment ID"),
+    status: str | None = Query(default=None, description="Filter by status (DRAFT, SUBMITTED, APPROVED, RETURNED)"),
+    reviewer_employee_id: str | None = Query(default=None, description="Filter by reviewer employee ID"),
+    approver_employee_id: str | None = Query(default=None, description="Filter by approver employee ID"),
+    subject_employee_id: str | None = Query(default=None, description="Filter by subject employee ID"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    List evaluations in a cycle with optional filters.
+    Non-admin users can only see evaluations they're involved in (as reviewer, approver, or subject).
+    """
+    cycle = _get_cycle_or_404(db, cycle_id)
+    
+    query = db.query(Evaluation).filter(Evaluation.cycle_id == cycle.id)
+    
+    # Apply filters
+    if assignment_id:
+        query = query.filter(Evaluation.assignment_id == assignment_id)
+    if status:
+        query = query.filter(Evaluation.status == status)
+    
+    # Determine if we need to join with assignments
+    needs_join = False
+    if reviewer_employee_id or approver_employee_id or subject_employee_id:
+        needs_join = True
+    
+    # Non-admin users: filter to only their evaluations
+    from app.core.rbac import get_user_role_names
+    role_names = get_user_role_names(db, user)
+    if "ADMIN" not in role_names:
+        needs_join = True
+    
+    # Join with assignments if needed
+    if needs_join:
+        query = query.join(ReviewAssignment, ReviewAssignment.id == Evaluation.assignment_id)
+        
+        # Employee filters
+        if reviewer_employee_id:
+            query = query.filter(ReviewAssignment.reviewer_employee_id == reviewer_employee_id)
+        if approver_employee_id:
+            query = query.filter(ReviewAssignment.approver_employee_id == approver_employee_id)
+        if subject_employee_id:
+            query = query.filter(ReviewAssignment.subject_employee_id == subject_employee_id)
+        
+        # Non-admin users: filter to only their evaluations
+        if "ADMIN" not in role_names:
+            employee = get_employee_for_user(db, user)
+            if not employee:
+                # User has no employee record, return empty
+                return []
+            
+            query = query.filter(
+                (ReviewAssignment.reviewer_employee_id == employee.id)
+                | (ReviewAssignment.approver_employee_id == employee.id)
+                | (ReviewAssignment.subject_employee_id == employee.id)
+            )
+    
+    evaluations = query.order_by(Evaluation.created_at.desc()).offset(offset).limit(limit).all()
+    return [eval_to_out(e) for e in evaluations]
 
 
 @router.get("/evaluations/{evaluation_id}", response_model=EvaluationWithResponsesOut)
