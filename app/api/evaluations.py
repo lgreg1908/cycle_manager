@@ -207,7 +207,6 @@ def get_evaluation(
     set_etag(response, out.version)
     return out
 
-
 @router.post("/evaluations/{evaluation_id}/draft", response_model=EvaluationWithResponsesOut)
 def save_draft(
     cycle_id: str,
@@ -220,6 +219,10 @@ def save_draft(
     if_match: str | None = Header(default=None, alias="If-Match"),
 ):
     expected_version = parse_if_match(if_match)
+
+    # Require concurrency token
+    if expected_version is None:
+        raise HTTPException(status_code=428, detail="If-Match required")
 
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
@@ -270,15 +273,14 @@ def save_draft(
                 raise HTTPException(status_code=404, detail="Evaluation not found")
 
             if e2.status != "DRAFT":
-                raise HTTPException(
-                    status_code=409, detail="Can only edit draft evaluations"
-                )
+                raise HTTPException(status_code=409, detail="Can only edit draft evaluations")
 
             # optimistic lock check (fast failure)
             assert_version_matches(
                 current_version=e2.version, if_match_version=expected_version
             )
 
+            # upsert responses
             for r in payload.responses:
                 existing = (
                     db.query(EvaluationResponse)
@@ -290,6 +292,7 @@ def save_draft(
                 )
                 if existing:
                     existing.value_text = r.value_text
+                    # optional, since model has onupdate; harmless to keep
                     existing.updated_at = datetime.utcnow()
                 else:
                     db.add(
@@ -301,10 +304,10 @@ def save_draft(
                         )
                     )
 
+            # IMPORTANT: touch parent row so version increments (optimistic locking)
             e2.updated_at = datetime.utcnow()
 
-            # ensure version increments + responses are queryable
-            db.flush()
+            db.flush()  # bumps version + ensures responses are queryable
 
             log_event(
                 db=db,
@@ -343,7 +346,6 @@ def save_draft(
             fail_idempotent_request(db=db, row=idem_row)
         raise
 
-
 @router.post("/evaluations/{evaluation_id}/submit", response_model=EvaluationOut)
 def submit_evaluation(
     cycle_id: str,
@@ -359,7 +361,8 @@ def submit_evaluation(
     cycle = _get_cycle_or_404(db, cycle_id)
     if cycle.status != "ACTIVE":
         raise HTTPException(
-            status_code=409, detail="Evaluations can only be submitted while cycle is ACTIVE"
+            status_code=409,
+            detail="Evaluations can only be submitted while cycle is ACTIVE",
         )
 
     idem_row = None
@@ -498,7 +501,7 @@ def return_evaluation(
                 e.status = "RETURNED"
                 e.updated_at = datetime.utcnow()
 
-                db.flush()
+                db.flush()  # bumps version
 
                 log_event(
                     db=db,
@@ -591,7 +594,7 @@ def approve_evaluation(
                 e.approved_at = datetime.utcnow()
                 e.updated_at = datetime.utcnow()
 
-                db.flush()
+                db.flush()  # bumps version
 
                 log_event(
                     db=db,
