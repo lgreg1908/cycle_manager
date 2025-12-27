@@ -296,3 +296,76 @@ def test_me_assignments_filter_by_role(db_session):
     assignments = r.json()
     assert len(assignments) == 1
     assert assignments[0]["id"] == str(assignment2.id)
+
+
+# ===== User Stats Tests =====
+
+def test_me_stats_no_employee(db_session):
+    """Test /me/stats when user has no employee record"""
+    user = create_user(db_session, "user@example.com")
+    client = TestClient(app)
+    
+    response = client.get(
+        "/me/stats",
+        headers={"X-User-Email": "user@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_evaluations"] == 0
+    assert data["total_assignments"] == 0
+
+
+def test_me_stats_with_data(db_session):
+    """Test /me/stats with actual data"""
+    from datetime import datetime
+    from app.models.evaluation import Evaluation
+    from tests.helpers import grant_role, create_form_for_cycle_with_fields
+    
+    admin = create_user(db_session, "admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    user = create_user(db_session, "user@example.com")
+    employee = create_employee(db_session, "E001", "User Employee", user=user)
+    
+    reviewer = create_employee(db_session, "R001", "Reviewer")
+    subject = create_employee(db_session, "S001", "Subject")
+    approver = create_employee(db_session, "A001", "Approver")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="DRAFT")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[{"key": "q1", "field_type": "text"}],
+    )
+    cycle.status = "ACTIVE"
+    db_session.commit()
+    
+    # Create assignment where user is reviewer
+    assignment = create_assignment(
+        db_session,
+        cycle=cycle,
+        reviewer=employee,
+        subject=subject,
+        approver=approver,
+    )
+    
+    # Create evaluation
+    evaluation = Evaluation(
+        cycle_id=cycle.id,
+        assignment_id=assignment.id,
+        status="DRAFT",
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+    
+    client = TestClient(app)
+    response = client.get(
+        "/me/stats",
+        headers={"X-User-Email": "user@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_evaluations"] == 1
+    assert data["total_assignments"] == 1
+    assert data["evaluations_by_status"]["DRAFT"] == 1
+    assert data["assignments_by_role"]["reviewer"] == 1

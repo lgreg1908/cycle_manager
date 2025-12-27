@@ -181,3 +181,62 @@ def test_quick_search_employees_requires_query(db_session):
     r = client.get("/employees/search/quick", headers={"X-User-Email": "user@test.com"})
     assert r.status_code == 422  # Validation error for missing required parameter
 
+
+# ===== Bulk Employee Lookup Tests =====
+
+def test_bulk_employee_lookup(db_session):
+    """Test bulk employee lookup endpoint"""
+    import uuid
+    user = create_user(db_session, "user@test.com")
+    
+    # Create employees
+    emp1 = create_employee(db_session, "E001", "Employee One")
+    emp2 = create_employee(db_session, "E002", "Employee Two")
+    emp3 = create_employee(db_session, "E003", "Employee Three")
+    
+    # Use a valid UUID that doesn't exist
+    fake_id = str(uuid.uuid4())
+    client = TestClient(app)
+    response = client.post(
+        "/employees/bulk-lookup",
+        headers={"X-User-Email": "user@test.com"},
+        json={"employee_ids": [str(emp1.id), str(emp2.id), fake_id]},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["employees"]) == 2
+    assert len(data["missing_ids"]) == 1
+    assert data["missing_ids"][0] == fake_id
+    
+    # Verify found employees
+    found_ids = {e["id"] for e in data["employees"]}
+    assert str(emp1.id) in found_ids
+    assert str(emp2.id) in found_ids
+    assert str(emp3.id) not in found_ids
+
+
+def test_bulk_employee_lookup_empty_list(db_session):
+    """Test bulk employee lookup with empty list"""
+    user = create_user(db_session, "user@test.com")
+    client = TestClient(app)
+    
+    response = client.post(
+        "/employees/bulk-lookup",
+        headers={"X-User-Email": "user@test.com"},
+        json={"employee_ids": []},
+    )
+    assert response.status_code == 422  # Validation error
+
+
+def test_bulk_employee_lookup_invalid_uuid(db_session):
+    """Test bulk employee lookup with invalid UUID format"""
+    user = create_user(db_session, "user@test.com")
+    client = TestClient(app)
+    
+    response = client.post(
+        "/employees/bulk-lookup",
+        headers={"X-User-Email": "user@test.com"},
+        json={"employee_ids": ["not-a-uuid"]},
+    )
+    assert response.status_code == 400
+

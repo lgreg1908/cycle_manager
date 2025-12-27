@@ -14,6 +14,7 @@ from app.schemas.evaluation import EvaluationOut
 from app.schemas.review_assignment import AssignmentOut
 from app.schemas.expanded import AssignmentOutExpanded
 from app.schemas.pagination import PaginatedResponse, PaginationMeta
+from app.schemas.stats import UserStats
 
 router = APIRouter(tags=["auth"])
 
@@ -217,3 +218,64 @@ def my_assignments(
             ),
         )
     return items
+
+
+@router.get("/me/stats", response_model=UserStats)
+def get_my_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get statistics for the current user's evaluations and assignments.
+    """
+    employee = get_employee_for_user(db, current_user)
+    if not employee:
+        return UserStats()
+
+    # Get evaluations where user is involved
+    evaluations = (
+        db.query(Evaluation)
+        .join(ReviewAssignment, ReviewAssignment.id == Evaluation.assignment_id)
+        .filter(
+            (ReviewAssignment.reviewer_employee_id == employee.id)
+            | (ReviewAssignment.approver_employee_id == employee.id)
+            | (ReviewAssignment.subject_employee_id == employee.id)
+        )
+        .all()
+    )
+
+    # Get assignments where user is involved
+    assignments = (
+        db.query(ReviewAssignment)
+        .filter(
+            (ReviewAssignment.reviewer_employee_id == employee.id)
+            | (ReviewAssignment.approver_employee_id == employee.id)
+            | (ReviewAssignment.subject_employee_id == employee.id)
+        )
+        .all()
+    )
+
+    # Calculate evaluation stats
+    evaluations_by_status: dict[str, int] = {}
+    for eval in evaluations:
+        evaluations_by_status[eval.status] = evaluations_by_status.get(eval.status, 0) + 1
+
+    # Calculate assignment stats by role
+    assignments_by_role: dict[str, int] = {"reviewer": 0, "approver": 0, "subject": 0}
+    assignments_by_status: dict[str, int] = {}
+    for assignment in assignments:
+        if assignment.reviewer_employee_id == employee.id:
+            assignments_by_role["reviewer"] += 1
+        if assignment.approver_employee_id == employee.id:
+            assignments_by_role["approver"] += 1
+        if assignment.subject_employee_id == employee.id:
+            assignments_by_role["subject"] += 1
+        assignments_by_status[assignment.status] = assignments_by_status.get(assignment.status, 0) + 1
+
+    return UserStats(
+        total_evaluations=len(evaluations),
+        evaluations_by_status=evaluations_by_status,
+        total_assignments=len(assignments),
+        assignments_by_role=assignments_by_role,
+        assignments_by_status=assignments_by_status,
+    )

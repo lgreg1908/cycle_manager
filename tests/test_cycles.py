@@ -293,3 +293,257 @@ def test_list_cycles_with_search_and_pagination(db_session):
     assert r.status_code == 200
     cycles = r.json()
     assert all(c["status"] == "DRAFT" for c in cycles)
+
+
+# ===== Cycle Readiness Check Tests =====
+
+def test_cycle_readiness_not_found(client: TestClient, db_session):
+    """Test cycle readiness check for non-existent cycle"""
+    import uuid
+    from tests.helpers import create_user, grant_role
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    # Use a valid UUID format that doesn't exist
+    fake_id = str(uuid.uuid4())
+    response = client.get(
+        f"/cycles/{fake_id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 404
+
+
+def test_cycle_readiness_not_draft(client: TestClient, db_session):
+    """Test cycle readiness check for non-DRAFT cycle"""
+    from tests.helpers import create_user, grant_role, create_cycle
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_activate"] is False
+    assert data["ready"] is False
+    assert "is_draft" in data["checks"]
+    assert data["checks"]["is_draft"] is False
+    assert len(data["errors"]) > 0
+
+
+def test_cycle_readiness_no_form_template(client: TestClient, db_session):
+    """Test cycle readiness check when no form template is assigned"""
+    from tests.helpers import create_user, grant_role, create_cycle
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="DRAFT")
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_activate"] is False
+    assert data["checks"]["has_form_template"] is False
+    assert any("form template" in err.lower() for err in data["errors"])
+
+
+def test_cycle_readiness_no_assignments(client: TestClient, db_session):
+    """Test cycle readiness check when no assignments exist"""
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_form_template,
+        create_field_definition, attach_field_to_form, set_cycle_form_template,
+    )
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="DRAFT")
+    form = create_form_template(db_session, name="Test Form")
+    field = create_field_definition(db_session, key="q1", field_type="text")
+    attach_field_to_form(db_session, form=form, field=field, position=1)
+    set_cycle_form_template(db_session, cycle=cycle, form=form)
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_activate"] is False
+    assert data["checks"]["has_assignments"] is False
+    assert any("assignment" in err.lower() for err in data["errors"])
+
+
+def test_cycle_readiness_form_without_fields(client: TestClient, db_session):
+    """Test cycle readiness check when form has no fields"""
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_form_template,
+        set_cycle_form_template, create_employee, create_assignment,
+    )
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="DRAFT")
+    form = create_form_template(db_session, name="Test Form")
+    set_cycle_form_template(db_session, cycle=cycle, form=form)
+    
+    reviewer = create_employee(db_session, employee_number="R001", display_name="Reviewer")
+    subject = create_employee(db_session, employee_number="S001", display_name="Subject")
+    approver = create_employee(db_session, employee_number="A001", display_name="Approver")
+    create_assignment(db_session, cycle=cycle, reviewer=reviewer, subject=subject, approver=approver)
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_activate"] is False
+    assert data["checks"]["form_has_fields"] is False
+    assert any("field" in err.lower() for err in data["errors"])
+
+
+def test_cycle_readiness_ready(client: TestClient, db_session):
+    """Test cycle readiness check when cycle is ready"""
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_form_for_cycle_with_fields,
+        create_employee, create_assignment,
+    )
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="DRAFT")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[{"key": "q1", "field_type": "text"}],
+    )
+    
+    reviewer = create_employee(db_session, employee_number="R001", display_name="Reviewer")
+    subject = create_employee(db_session, employee_number="S001", display_name="Subject")
+    approver = create_employee(db_session, employee_number="A001", display_name="Approver")
+    create_assignment(db_session, cycle=cycle, reviewer=reviewer, subject=subject, approver=approver)
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_activate"] is True
+    assert all(data["checks"].values())
+    assert len(data["errors"]) == 0
+
+
+def test_cycle_readiness_warnings(client: TestClient, db_session):
+    """Test cycle readiness check with warnings (non-blocking)"""
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_form_for_cycle_with_fields,
+        create_employee, create_assignment,
+    )
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="DRAFT")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[{"key": "q1", "field_type": "text"}],
+    )
+    
+    reviewer = create_employee(db_session, employee_number="R001", display_name="Reviewer")
+    subject = create_employee(db_session, employee_number="S001", display_name="Subject")
+    approver = create_employee(db_session, employee_number="A001", display_name="Approver")
+    create_assignment(db_session, cycle=cycle, reviewer=reviewer, subject=subject, approver=approver)
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/readiness",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_activate"] is True
+    # Should have warnings about missing dates
+    assert len(data["warnings"]) > 0
+    assert any("date" in w.lower() for w in data["warnings"])
+
+
+# ===== Cycle Stats Tests =====
+
+def test_cycle_stats(client: TestClient, db_session):
+    """Test /cycles/{id}/stats endpoint"""
+    from datetime import datetime
+    from app.models.evaluation import Evaluation
+    from tests.helpers import create_user, grant_role, create_cycle, create_employee, create_assignment
+    
+    admin = create_user(db_session, email="admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    
+    approver = create_employee(db_session, employee_number="A001", display_name="Approver")
+    
+    # Create 3 assignments with different employees (unique constraint)
+    assignments = []
+    for i in range(3):
+        reviewer = create_employee(db_session, employee_number=f"R{i:03d}", display_name=f"Reviewer {i}")
+        subject = create_employee(db_session, employee_number=f"S{i:03d}", display_name=f"Subject {i}")
+        assignments.append(create_assignment(
+            db_session,
+            cycle=cycle,
+            reviewer=reviewer,
+            subject=subject,
+            approver=approver,
+        ))
+    
+    # Create 2 evaluations
+    for i in range(2):
+        evaluation = Evaluation(
+            cycle_id=cycle.id,
+            assignment_id=assignments[i].id,
+            status="DRAFT" if i == 0 else "SUBMITTED",
+            submitted_at=datetime.utcnow() if i == 1 else None,
+        )
+        db_session.add(evaluation)
+    db_session.commit()
+    
+    response = client.get(
+        f"/cycles/{cycle.id}/stats",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cycle_id"] == str(cycle.id)
+    assert data["cycle_name"] == cycle.name
+    assert data["total_assignments"] == 3
+    assert data["total_evaluations"] == 2
+    assert data["evaluations_by_status"]["DRAFT"] == 1
+    assert data["evaluations_by_status"]["SUBMITTED"] == 1
+    assert data["completion_rate"] > 0  # 2/3 = 66.67%
+
+
+def test_cycle_stats_not_found(client: TestClient, db_session):
+    """Test /cycles/{id}/stats for non-existent cycle"""
+    import uuid
+    from tests.helpers import create_user
+    
+    user = create_user(db_session, email="user@example.com")
+    
+    fake_id = str(uuid.uuid4())
+    response = client.get(
+        f"/cycles/{fake_id}/stats",
+        headers={"X-User-Email": "user@example.com"},
+    )
+    assert response.status_code == 404

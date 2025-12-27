@@ -34,6 +34,7 @@ from app.schemas.evaluation import (
 )
 from app.schemas.expanded import EvaluationOutExpanded
 from app.schemas.pagination import PaginatedResponse, PaginationMeta
+from app.schemas.validation import ValidationPreviewResponse, ValidationError
 
 router = APIRouter(prefix="/cycles/{cycle_id}", tags=["evaluations"])
 
@@ -779,3 +780,81 @@ def approve_evaluation(
         if idem_row:
             fail_idempotent_request(db=db, row=idem_row)
         raise
+
+
+@router.post("/evaluations/{evaluation_id}/validate", response_model=ValidationPreviewResponse)
+def validate_evaluation(
+    cycle_id: str,
+    evaluation_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Preview validation errors for an evaluation without submitting.
+    Useful for showing users what needs to be fixed before submission.
+    """
+    cycle = _get_cycle_or_404(db, cycle_id)
+    evaluation = db.get(Evaluation, evaluation_id)
+    if not evaluation or str(evaluation.cycle_id) != cycle_id:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+
+    # Check access
+    assignment = _get_assignment_in_cycle_or_404(db, cycle_id, str(evaluation.assignment_id))
+    try:
+        assert_user_is_reviewer(db, current_user, assignment)
+    except HTTPException:
+        assert_user_is_approver(db, current_user, assignment)
+
+    # Get stored responses
+    responses = (
+        db.query(EvaluationResponse)
+        .filter(EvaluationResponse.evaluation_id == evaluation.id)
+        .all()
+    )
+    stored_responses = {r.question_key: r.value_text for r in responses}
+
+    # Use validation logic but catch errors instead of raising
+    from app.core.evaluation_form_validation import (
+        _load_form_for_cycle_or_409,
+        _load_form_fields_map,
+        _full_validate_one,
+    )
+
+    try:
+        form = _load_form_for_cycle_or_409(db, cycle)
+    except HTTPException as e:
+        return ValidationPreviewResponse(
+            valid=False,
+            errors=[ValidationError(field="", code="form_missing", message=e.detail)],
+            warnings=[],
+        )
+
+    spec_map = _load_form_fields_map(db, form)
+    validation_errors: list[dict] = []
+
+    # Check for unknown keys
+    for key in stored_responses.keys():
+        if key not in spec_map:
+            validation_errors.append({"field": key, "code": "unknown_key", "message": "Not in form"})
+
+    # Validate all fields
+    for key, spec in spec_map.items():
+        value = stored_responses.get(key)
+        validation_errors.extend(_full_validate_one(db, spec, value))
+
+    # Convert to ValidationError objects
+    errors = [
+        ValidationError(field=e["field"], code=e["code"], message=e["message"])
+        for e in validation_errors
+    ]
+
+    # Warnings (non-blocking)
+    warnings: list[str] = []
+    if evaluation.status == "DRAFT" and len(errors) == 0:
+        warnings.append("Evaluation is ready to submit")
+
+    return ValidationPreviewResponse(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
