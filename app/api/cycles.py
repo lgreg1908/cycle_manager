@@ -60,9 +60,8 @@ def create_cycle(
         end_date=payload.end_date,
         status="DRAFT",
         created_by_user_id=current_user.id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
     )
+
     db.add(c)
     db.flush()  # ensures c.id exists for audit
 
@@ -112,8 +111,6 @@ def update_cycle(
         c.start_date = payload.start_date
     if payload.end_date is not None:
         c.end_date = payload.end_date
-
-    c.updated_at = datetime.utcnow()
 
     log_event(
         db=db,
@@ -191,7 +188,6 @@ def close_cycle(
 
     prev = c.status
     c.status = "CLOSED"
-    c.updated_at = datetime.utcnow()
 
     log_event(
         db=db,

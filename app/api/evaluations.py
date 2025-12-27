@@ -139,9 +139,7 @@ def create_or_get_evaluation(
                     e = Evaluation(
                         cycle_id=assignment.cycle_id,
                         assignment_id=assignment.id,
-                        status="DRAFT",
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow(),
+                        status="DRAFT"
                     )
                     db.add(e)
                     db.flush()  # may raise IntegrityError if unique constraint hits
