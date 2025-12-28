@@ -1,0 +1,2373 @@
+{
+	"info": {
+		"name": "Cycle Manager API - Complete Workflows",
+		"description": "End-to-end workflows for testing the Cycle Manager application\n\n## Setup\n1. Set baseUrl variable (default: http://localhost:8000)\n2. Set user emails: adminEmail, reviewerEmail, approverEmail\n3. Run workflows in order\n\n## Workflows\n- **Admin**: Create cycle, form, assignments, activate\n- **Reviewer**: Create evaluation, save draft, submit\n- **Approver**: Approve/return evaluations\n- **Statistics**: View stats and reports",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "adminEmail",
+			"value": "admin@local.test",
+			"type": "string"
+		},
+		{
+			"key": "reviewerEmail",
+			"value": "reviewer@local.test",
+			"type": "string"
+		},
+		{
+			"key": "approverEmail",
+			"value": "approver@local.test",
+			"type": "string"
+		},
+		{
+			"key": "cycleId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "formTemplateId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "fieldDefinitionId1",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "fieldDefinitionId2",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "assignmentId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "evaluationId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "evaluationVersion",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "reviewerEmployeeId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "subjectEmployeeId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "approverEmployeeId",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "1. Setup & Health",
+			"item": [
+				{
+					"name": "1.0 List Existing Cycles (Optional)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"if (pm.response.code === 200) {",
+									"    const jsonData = pm.response.json();",
+									"    if (Array.isArray(jsonData) && jsonData.length > 0) {",
+									"        const firstCycle = jsonData[0];",
+									"        console.log(\"📋 Found\", jsonData.length, \"cycle(s)\");",
+									"        console.log(\"💡 To use an existing cycle, set cycleId to:\", firstCycle.id);",
+									"        console.log(\"   Cycle name:\", firstCycle.name, \"|\", \"Status:\", firstCycle.status);",
+									"        // Optionally auto-set if cycleId is empty",
+									"        const currentCycleId = pm.collectionVariables.get(\"cycleId\");",
+									"        if (!currentCycleId || currentCycleId === \"\" || currentCycleId === \"null\") {",
+									"            pm.collectionVariables.set(\"cycleId\", firstCycle.id);",
+									"            console.log(\"✅ Auto-set cycleId to first cycle:\", firstCycle.id);",
+									"        }",
+									"    } else {",
+									"        console.log(\"📋 No cycles found. Create one using '2.1 Create Review Cycle'\");",
+									"    }",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["health"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Root Endpoint",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/",
+							"host": ["{{baseUrl}}"],
+							"path": [""]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Current User (Admin)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"if (jsonData.employee_id) {",
+									"    // Store admin employee ID for later use",
+									"    console.log(\"✅ Admin employee ID:\", jsonData.employee_id);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/me",
+							"host": ["{{baseUrl}}"],
+							"path": ["me"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "2. Admin Workflow - Cycle Setup",
+			"item": [
+				{
+					"name": "2.1 Create Review Cycle",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"if (pm.response.code === 201) {",
+									"    const jsonData = pm.response.json();",
+									"    if (jsonData.id) {",
+									"        pm.collectionVariables.set(\"cycleId\", jsonData.id);",
+									"        console.log(\"✅ cycleId set to:\", jsonData.id);",
+									"    } else {",
+									"        console.error(\"❌ Response missing 'id' field\");",
+									"    }",
+									"    pm.test(\"Cycle created with DRAFT status\", function () {",
+									"        pm.expect(jsonData.status).to.eql(\"DRAFT\");",
+									"    });",
+									"} else {",
+									"    console.error(\"❌ Failed to create cycle. Status:\", pm.response.code);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Q4 2024 Performance Reviews\",\n    \"start_date\": \"2024-10-01\",\n    \"end_date\": \"2024-12-31\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.2 Get Cycle Details",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Check if cycleId is set and update URL if needed",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"// Handle various null/empty cases",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\" || cycleId === null) {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first to create a cycle and set cycleId automatically.\");",
+									"    console.error(\"💡 Or run '1.0 List Existing Cycles' to auto-set from existing cycles.\");",
+									"    console.error(\"💡 Or manually set cycleId in collection variables.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"// Ensure cycleId is a string and valid",
+									"cycleId = String(cycleId).trim();",
+									"",
+									"// Validate it looks like a UUID",
+									"const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;",
+									"if (!uuidRegex.test(cycleId)) {",
+									"    console.error(\"❌ cycleId is not a valid UUID:\", cycleId);",
+									"    throw new Error(\"cycleId must be a valid UUID. Current value: \" + cycleId);",
+									"}",
+									"",
+									"// Update the variable to ensure it's set correctly",
+									"pm.collectionVariables.set(\"cycleId\", cycleId);",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"",
+									"// Update the URL path directly to ensure correct substitution",
+									"const url = pm.request.url;",
+									"if (url && url.path) {",
+									"    const pathIndex = url.path.findIndex(p => p === \"{{cycleId}}\" || p === \"null\");",
+									"    if (pathIndex !== -1) {",
+									"        url.path[pathIndex] = cycleId;",
+									"        console.log(\"✅ Updated URL path to use cycleId:\", cycleId);",
+									"    }",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"if (pm.response.code === 200) {",
+									"    const jsonData = pm.response.json();",
+									"    console.log(\"✅ Retrieved cycle:\", jsonData.name);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.3 Check Cycle Readiness (Before Setup)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/readiness",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "readiness"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.4 Create Field Definition - Rating",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.collectionVariables.set(\"fieldDefinitionId1\", jsonData.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"key\": \"performance_rating\",\n    \"label\": \"Overall Performance Rating\",\n    \"field_type\": \"number\",\n    \"required\": true,\n    \"rules\": {\n        \"min\": 1,\n        \"max\": 5,\n        \"integer\": true\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/forms/fields",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms", "fields"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.5 Create Field Definition - Comments",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.collectionVariables.set(\"fieldDefinitionId2\", jsonData.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"key\": \"comments\",\n    \"label\": \"Comments\",\n    \"field_type\": \"text\",\n    \"required\": false,\n    \"rules\": {\n        \"max_length\": 1000\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/forms/fields",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms", "fields"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.6 List Field Definitions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/forms/fields",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms", "fields"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.7 Create Form Template",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.collectionVariables.set(\"formTemplateId\", jsonData.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Performance Review Form\",\n    \"version\": 1,\n    \"description\": \"Standard performance review form for Q4 2024\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/forms",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.8 Attach Field 1 to Form",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate formTemplateId and fieldDefinitionId1",
+									"let formTemplateId = pm.collectionVariables.get(\"formTemplateId\");",
+									"let fieldDefinitionId1 = pm.collectionVariables.get(\"fieldDefinitionId1\");",
+									"",
+									"if (!formTemplateId || formTemplateId === \"null\" || formTemplateId === \"undefined\" || formTemplateId === \"\") {",
+									"    console.error(\"❌ formTemplateId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.7 Create Form Template' first.\");",
+									"    throw new Error(\"formTemplateId is required. Please run '2.7 Create Form Template' first.\");",
+									"}",
+									"",
+									"if (!fieldDefinitionId1 || fieldDefinitionId1 === \"null\" || fieldDefinitionId1 === \"undefined\" || fieldDefinitionId1 === \"\") {",
+									"    console.error(\"❌ fieldDefinitionId1 is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.4 Create Field Definition - Rating' first.\");",
+									"    throw new Error(\"fieldDefinitionId1 is required. Please run '2.4 Create Field Definition - Rating' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using formTemplateId:\", formTemplateId);",
+									"console.log(\"✅ Using fieldDefinitionId1:\", fieldDefinitionId1);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "[\n    {\n        \"field_definition_id\": \"{{fieldDefinitionId1}}\",\n        \"position\": 1\n    }\n]"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/forms/{{formTemplateId}}/fields",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms", "{{formTemplateId}}", "fields"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.9 Attach Field 2 to Form",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate formTemplateId and fieldDefinitionId2",
+									"let formTemplateId = pm.collectionVariables.get(\"formTemplateId\");",
+									"let fieldDefinitionId2 = pm.collectionVariables.get(\"fieldDefinitionId2\");",
+									"",
+									"if (!formTemplateId || formTemplateId === \"null\" || formTemplateId === \"undefined\" || formTemplateId === \"\") {",
+									"    console.error(\"❌ formTemplateId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.7 Create Form Template' first.\");",
+									"    throw new Error(\"formTemplateId is required. Please run '2.7 Create Form Template' first.\");",
+									"}",
+									"",
+									"if (!fieldDefinitionId2 || fieldDefinitionId2 === \"null\" || fieldDefinitionId2 === \"undefined\" || fieldDefinitionId2 === \"\") {",
+									"    console.error(\"❌ fieldDefinitionId2 is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.5 Create Field Definition - Comments' first.\");",
+									"    throw new Error(\"fieldDefinitionId2 is required. Please run '2.5 Create Field Definition - Comments' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using formTemplateId:\", formTemplateId);",
+									"console.log(\"✅ Using fieldDefinitionId2:\", fieldDefinitionId2);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "[\n    {\n        \"field_definition_id\": \"{{fieldDefinitionId2}}\",\n        \"position\": 2\n    }\n]"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/forms/{{formTemplateId}}/fields",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms", "{{formTemplateId}}", "fields"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.10 Get Form with Fields",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate formTemplateId",
+									"let formTemplateId = pm.collectionVariables.get(\"formTemplateId\");",
+									"",
+									"if (!formTemplateId || formTemplateId === \"null\" || formTemplateId === \"undefined\" || formTemplateId === \"\") {",
+									"    console.error(\"❌ formTemplateId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.7 Create Form Template' first.\");",
+									"    throw new Error(\"formTemplateId is required. Please run '2.7 Create Form Template' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using formTemplateId:\", formTemplateId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/forms/{{formTemplateId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["forms", "{{formTemplateId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.11 Assign Form to Cycle",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId and formTemplateId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let formTemplateId = pm.collectionVariables.get(\"formTemplateId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"if (!formTemplateId || formTemplateId === \"null\" || formTemplateId === \"undefined\" || formTemplateId === \"\") {",
+									"    console.error(\"❌ formTemplateId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.7 Create Form Template' first.\");",
+									"    throw new Error(\"formTemplateId is required. Please run '2.7 Create Form Template' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using formTemplateId:\", formTemplateId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/set-form/{{formTemplateId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "set-form", "{{formTemplateId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.12 Get Employees (for Assignment)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"if (jsonData.length >= 3) {",
+									"    pm.collectionVariables.set(\"reviewerEmployeeId\", jsonData[0].id);",
+									"    pm.collectionVariables.set(\"subjectEmployeeId\", jsonData[1].id);",
+									"    pm.collectionVariables.set(\"approverEmployeeId\", jsonData[2].id);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/employees?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["employees"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.13 Bulk Create Assignments",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId and employee IDs",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let reviewerEmployeeId = pm.collectionVariables.get(\"reviewerEmployeeId\");",
+									"let subjectEmployeeId = pm.collectionVariables.get(\"subjectEmployeeId\");",
+									"let approverEmployeeId = pm.collectionVariables.get(\"approverEmployeeId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"if (!reviewerEmployeeId || !subjectEmployeeId || !approverEmployeeId) {",
+									"    console.error(\"❌ Employee IDs are not set!\");",
+									"    console.error(\"💡 Solution: Run '2.12 Get Employees (for Assignment)' first.\");",
+									"    throw new Error(\"Employee IDs are required. Please run '2.12 Get Employees (for Assignment)' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"if (jsonData.length > 0) {",
+									"    pm.collectionVariables.set(\"assignmentId\", jsonData[0].id);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "bulk-assign-{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"items\": [\n        {\n            \"reviewer_employee_id\": \"{{reviewerEmployeeId}}\",\n            \"subject_employee_id\": \"{{subjectEmployeeId}}\",\n            \"approver_employee_id\": \"{{approverEmployeeId}}\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/assignments/bulk",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "assignments", "bulk"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.14 List Assignments",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/assignments?expand=employees",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "assignments"],
+							"query": [
+								{
+									"key": "expand",
+									"value": "employees"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.15 Check Cycle Readiness (After Setup)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/readiness",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "readiness"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2.16 Activate Cycle",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '2.1 Create Review Cycle' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.test(\"Cycle is ACTIVE\", function () {",
+									"    pm.expect(jsonData.status).to.eql(\"ACTIVE\");",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/activate",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "activate"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "3. Reviewer Workflow - Complete Evaluation",
+			"item": [
+				{
+					"name": "3.1 Get My Assignments",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"if (pm.response.code === 200) {",
+									"    const jsonData = pm.response.json();",
+									"    ",
+									"    // Handle both array and paginated response",
+									"    let assignments = Array.isArray(jsonData) ? jsonData : (jsonData.items || []);",
+									"    ",
+									"    if (assignments.length > 0) {",
+									"        // Find assignment where user is reviewer",
+									"        // The API returns assignments with role info in the response",
+									"        const reviewerAssignment = assignments.find(a => {",
+									"            // Check if this assignment has the user as reviewer",
+									"            // The API endpoint filters by role, so all returned items should be reviewer assignments",
+									"            return a;",
+									"        });",
+									"        ",
+									"        if (reviewerAssignment) {",
+									"            pm.collectionVariables.set(\"assignmentId\", reviewerAssignment.id);",
+									"            pm.collectionVariables.set(\"cycleId\", reviewerAssignment.cycle_id);",
+									"            console.log(\"✅ Found reviewer assignment:\", reviewerAssignment.id);",
+									"            console.log(\"   Cycle ID:\", reviewerAssignment.cycle_id);",
+									"        } else {",
+									"            // Clear assignmentId if no reviewer assignment found",
+									"            pm.collectionVariables.unset(\"assignmentId\");",
+									"            console.error(\"❌ No assignment found where user is reviewer\");",
+									"            console.error(\"💡 Make sure you're using the correct cycleId or create a new assignment.\");",
+									"        }",
+									"    } else {",
+									"        // Clear assignmentId if no assignments found",
+									"        pm.collectionVariables.unset(\"assignmentId\");",
+									"        console.warn(\"⚠️  No assignments found for this cycle and role\");",
+									"        console.warn(\"💡 Try removing the cycle_id filter or create a new assignment.\");",
+									"    }",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/me/assignments?role=reviewer",
+							"host": ["{{baseUrl}}"],
+							"path": ["me", "assignments"],
+							"query": [
+								{
+									"key": "role",
+									"value": "reviewer",
+									"description": "Filter by role: reviewer, approver, or subject"
+								},
+								{
+									"key": "cycle_id",
+									"value": "{{cycleId}}",
+									"description": "Optional: Filter by cycle ID",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3.2 Create or Get Evaluation",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate assignmentId is set",
+									"let assignmentId = pm.collectionVariables.get(\"assignmentId\");",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!assignmentId || assignmentId === \"null\" || assignmentId === \"undefined\" || assignmentId === \"\") {",
+									"    console.error(\"❌ assignmentId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first to find your assignment.\");",
+									"    throw new Error(\"assignmentId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first - it will auto-set cycleId.\");",
+									"    throw new Error(\"cycleId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using assignmentId:\", assignmentId);",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 or 201\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.collectionVariables.set(\"evaluationId\", jsonData.id);",
+									"",
+									"// Extract version from ETag header for optimistic locking",
+									"const etag = pm.response.headers.get(\"ETag\");",
+									"if (etag) {",
+									"    pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"    console.log(\"✅ Set evaluationVersion from ETag:\", etag);",
+									"} else if (jsonData.version !== undefined) {",
+									"    // Fallback: use version from response body (quoted like ETag)",
+									"    const version = '\"' + jsonData.version + '\"';",
+									"    pm.collectionVariables.set(\"evaluationVersion\", version);",
+									"    console.log(\"✅ Set evaluationVersion from response body:\", version);",
+									"} else {",
+									"    console.warn(\"⚠️  No ETag or version found in response\");",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "create-eval-{{$randomUUID}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/assignments/{{assignmentId}}/evaluation",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "assignments", "{{assignmentId}}", "evaluation"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3.3 Get Evaluation Details",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId and evaluationId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.2 Create or Get Evaluation' first.\");",
+									"    throw new Error(\"evaluationId is required. Please run '3.2 Create or Get Evaluation' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3.4 Validate Draft (Before Saving)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId and evaluationId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.2 Create or Get Evaluation' first.\");",
+									"    throw new Error(\"evaluationId is required. Please run '3.2 Create or Get Evaluation' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"responses\": [\n        {\n            \"question_key\": \"overall_rating\",\n            \"value_text\": \"4\"\n        },\n        {\n            \"question_key\": \"q1\",\n            \"value_text\": \"Great work this quarter!\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/validate",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "validate"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3.5 Save Draft",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId, evaluationId, and evaluationVersion",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"let evaluationVersion = pm.collectionVariables.get(\"evaluationVersion\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.2 Create or Get Evaluation' first.\");",
+									"    throw new Error(\"evaluationId is required. Please run '3.2 Create or Get Evaluation' first.\");",
+									"}",
+									"",
+									"// If evaluationVersion is not set, fetch the evaluation to get the version",
+									"if (!evaluationVersion || evaluationVersion === \"null\" || evaluationVersion === \"undefined\" || evaluationVersion === \"\") {",
+									"    console.warn(\"⚠️  evaluationVersion is not set. Fetching evaluation to get version...\");",
+									"    ",
+									"    // Make a synchronous request to get the evaluation",
+									"    const getEvalUrl = pm.variables.get(\"baseUrl\") + \"/cycles/\" + cycleId + \"/evaluations/\" + evaluationId;",
+									"    const getEvalRequest = {",
+									"        url: getEvalUrl,",
+									"        method: 'GET',",
+									"        header: {",
+									"            'X-User-Email': pm.variables.get(\"reviewerEmail\")",
+									"        }",
+									"    };",
+									"    ",
+									"    try {",
+									"        const getEvalResponse = pm.sendRequest(getEvalRequest);",
+									"        if (getEvalResponse.code === 200) {",
+									"            const etag = getEvalResponse.headers.get(\"ETag\");",
+									"            if (etag) {",
+									"                pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"                evaluationVersion = etag;",
+									"                console.log(\"✅ Fetched evaluationVersion from ETag:\", etag);",
+									"            } else {",
+									"                // Fallback: get version from response body",
+									"                const evalData = getEvalResponse.json();",
+									"                if (evalData.version) {",
+									"                    const version = '\"' + evalData.version + '\"';",
+									"                    pm.collectionVariables.set(\"evaluationVersion\", version);",
+									"                    evaluationVersion = version;",
+									"                    console.log(\"✅ Fetched evaluationVersion from response:\", version);",
+									"                }",
+									"            }",
+									"        }",
+									"    } catch (e) {",
+									"        console.error(\"❌ Failed to fetch evaluation version:\", e);",
+									"        throw new Error(\"Could not fetch evaluation version. Please run '3.2 Create or Get Evaluation' or '3.3 Get Evaluation Details' first.\");",
+									"    }",
+									"}",
+									"",
+									"// Remove If-Match header if evaluationVersion is still empty",
+									"if (!evaluationVersion || evaluationVersion === \"null\" || evaluationVersion === \"undefined\" || evaluationVersion === \"\") {",
+									"    // Remove the If-Match header from the request",
+									"    const headers = pm.request.headers;",
+									"    const ifMatchIndex = headers.indexOf(header => header.key === 'If-Match');",
+									"    if (ifMatchIndex !== -1) {",
+									"        headers.splice(ifMatchIndex, 1);",
+									"        console.warn(\"⚠️  Removed empty If-Match header\");",
+									"    }",
+									"    throw new Error(\"evaluationVersion is required for optimistic locking. Please run '3.2 Create or Get Evaluation' or '3.3 Get Evaluation Details' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);",
+									"console.log(\"✅ Using evaluationVersion:\", evaluationVersion);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"// Update version from ETag",
+									"const etag = pm.response.headers.get(\"ETag\");",
+									"if (etag) {",
+									"    pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							},
+							{
+								"key": "If-Match",
+								"value": "{{evaluationVersion}}"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "save-draft-{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"responses\": [\n        {\n            \"question_key\": \"overall_rating\",\n            \"value_text\": \"4\"\n        },\n        {\n            \"question_key\": \"q1\",\n            \"value_text\": \"Great work this quarter! Excellent collaboration and technical skills.\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/draft",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "draft"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3.6 Get Evaluation After Draft Save",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId and evaluationId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.2 Create or Get Evaluation' first.\");",
+									"    throw new Error(\"evaluationId is required. Please run '3.2 Create or Get Evaluation' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3.7 Submit Evaluation",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId, evaluationId, and evaluationVersion",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"let evaluationVersion = pm.collectionVariables.get(\"evaluationVersion\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required. Please run '3.1 Get My Assignments' first.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    console.error(\"💡 Solution: Run '3.2 Create or Get Evaluation' first.\");",
+									"    throw new Error(\"evaluationId is required. Please run '3.2 Create or Get Evaluation' first.\");",
+									"}",
+									"",
+									"// If evaluationVersion is not set, fetch the evaluation to get the version",
+									"if (!evaluationVersion || evaluationVersion === \"null\" || evaluationVersion === \"undefined\" || evaluationVersion === \"\") {",
+									"    console.warn(\"⚠️  evaluationVersion is not set. Fetching evaluation to get version...\");",
+									"    ",
+									"    // Make a synchronous request to get the evaluation",
+									"    const getEvalUrl = pm.variables.get(\"baseUrl\") + \"/cycles/\" + cycleId + \"/evaluations/\" + evaluationId;",
+									"    const getEvalRequest = {",
+									"        url: getEvalUrl,",
+									"        method: 'GET',",
+									"        header: {",
+									"            'X-User-Email': pm.variables.get(\"reviewerEmail\")",
+									"        }",
+									"    };",
+									"    ",
+									"    try {",
+									"        const getEvalResponse = pm.sendRequest(getEvalRequest);",
+									"        if (getEvalResponse.code === 200) {",
+									"            const etag = getEvalResponse.headers.get(\"ETag\");",
+									"            if (etag) {",
+									"                pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"                evaluationVersion = etag;",
+									"                console.log(\"✅ Fetched evaluationVersion from ETag:\", etag);",
+									"            } else {",
+									"                // Fallback: get version from response body",
+									"                const evalData = getEvalResponse.json();",
+									"                if (evalData.version) {",
+									"                    const version = '\"' + evalData.version + '\"';",
+									"                    pm.collectionVariables.set(\"evaluationVersion\", version);",
+									"                    evaluationVersion = version;",
+									"                    console.log(\"✅ Fetched evaluationVersion from response:\", version);",
+									"                }",
+									"            }",
+									"        }",
+									"    } catch (e) {",
+									"        console.error(\"❌ Failed to fetch evaluation version:\", e);",
+									"        throw new Error(\"Could not fetch evaluation version. Please run '3.2 Create or Get Evaluation' or '3.5 Save Draft' first.\");",
+									"    }",
+									"}",
+									"",
+									"// Remove If-Match header if evaluationVersion is still empty",
+									"if (!evaluationVersion || evaluationVersion === \"null\" || evaluationVersion === \"undefined\" || evaluationVersion === \"\") {",
+									"    // Remove the If-Match header from the request",
+									"    const headers = pm.request.headers;",
+									"    const ifMatchIndex = headers.indexOf(header => header.key === 'If-Match');",
+									"    if (ifMatchIndex !== -1) {",
+									"        headers.splice(ifMatchIndex, 1);",
+									"        console.warn(\"⚠️  Removed empty If-Match header\");",
+									"    }",
+									"    throw new Error(\"evaluationVersion is required for optimistic locking. Please run '3.2 Create or Get Evaluation' or '3.5 Save Draft' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);",
+									"console.log(\"✅ Using evaluationVersion:\", evaluationVersion);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.test(\"Evaluation is SUBMITTED\", function () {",
+									"    pm.expect(jsonData.status).to.eql(\"SUBMITTED\");",
+									"});",
+									"",
+									"// Update version from ETag header for optimistic locking",
+									"const etag = pm.response.headers.get(\"ETag\");",
+									"if (etag) {",
+									"    pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"    console.log(\"✅ Updated evaluationVersion from ETag:\", etag);",
+									"} else if (jsonData.version !== undefined) {",
+									"    // Fallback: use version from response body (quoted like ETag)",
+									"    const version = '\"' + jsonData.version + '\"';",
+									"    pm.collectionVariables.set(\"evaluationVersion\", version);",
+									"    console.log(\"✅ Updated evaluationVersion from response body:\", version);",
+									"} else {",
+									"    console.warn(\"⚠️  No ETag or version found in response\");",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							},
+							{
+								"key": "If-Match",
+								"value": "{{evaluationVersion}}"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "submit-eval-{{$randomUUID}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/submit",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "submit"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "4. Approver Workflow - Review & Approve",
+			"item": [
+				{
+					"name": "4.1 Get My Assignments (as Approver)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{approverEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/me/assignments?role=approver",
+							"host": ["{{baseUrl}}"],
+							"path": ["me", "assignments"],
+							"query": [
+								{
+									"key": "role",
+									"value": "approver",
+									"description": "Filter by role: reviewer, approver, or subject"
+								},
+								{
+									"key": "cycle_id",
+									"value": "{{cycleId}}",
+									"description": "Optional: Filter by cycle ID",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4.2 List Evaluations (Pending Approval)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' or '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{approverEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations?status=SUBMITTED&expand=employees",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations"],
+							"query": [
+								{
+									"key": "status",
+									"value": "SUBMITTED"
+								},
+								{
+									"key": "expand",
+									"value": "employees"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4.3 Get Evaluation for Approval",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId and evaluationId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' or '3.1 Get My Assignments' first.\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    console.error(\"💡 Solution: Run '4.2 List Evaluations (Pending Approval)' and select an evaluation.\");",
+									"    throw new Error(\"evaluationId is required.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Update version from ETag",
+									"const etag = pm.response.headers.get(\"ETag\");",
+									"if (etag) {",
+									"    pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{approverEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4.4 Approve Evaluation",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId, evaluationId, and evaluationVersion",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"let evaluationVersion = pm.collectionVariables.get(\"evaluationVersion\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    throw new Error(\"evaluationId is required.\");",
+									"}",
+									"",
+									"if (!evaluationVersion || evaluationVersion === \"null\" || evaluationVersion === \"undefined\" || evaluationVersion === \"\") {",
+									"    console.error(\"❌ evaluationVersion is not set!\");",
+									"    console.error(\"💡 Solution: Run '4.3 Get Evaluation for Approval' first.\");",
+									"    throw new Error(\"evaluationVersion is required for optimistic locking. Please run '4.3 Get Evaluation for Approval' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);",
+									"console.log(\"✅ Using evaluationVersion:\", evaluationVersion);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.test(\"Evaluation is APPROVED\", function () {",
+									"    pm.expect(jsonData.status).to.eql(\"APPROVED\");",
+									"});",
+									"",
+									"// Update version from ETag header for optimistic locking",
+									"const etag = pm.response.headers.get(\"ETag\");",
+									"if (etag) {",
+									"    pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"    console.log(\"✅ Updated evaluationVersion from ETag:\", etag);",
+									"} else if (jsonData.version !== undefined) {",
+									"    // Fallback: use version from response body (quoted like ETag)",
+									"    const version = '\"' + jsonData.version + '\"';",
+									"    pm.collectionVariables.set(\"evaluationVersion\", version);",
+									"    console.log(\"✅ Updated evaluationVersion from response body:\", version);",
+									"} else {",
+									"    console.warn(\"⚠️  No ETag or version found in response\");",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{approverEmail}}"
+							},
+							{
+								"key": "If-Match",
+								"value": "{{evaluationVersion}}"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "approve-eval-{{$randomUUID}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/approve",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "approve"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4.5 Return Evaluation (Alternative)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId, evaluationId, and evaluationVersion",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"let evaluationId = pm.collectionVariables.get(\"evaluationId\");",
+									"let evaluationVersion = pm.collectionVariables.get(\"evaluationVersion\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"if (!evaluationId || evaluationId === \"null\" || evaluationId === \"undefined\" || evaluationId === \"\") {",
+									"    console.error(\"❌ evaluationId is not set!\");",
+									"    throw new Error(\"evaluationId is required.\");",
+									"}",
+									"",
+									"if (!evaluationVersion || evaluationVersion === \"null\" || evaluationVersion === \"undefined\" || evaluationVersion === \"\") {",
+									"    console.error(\"❌ evaluationVersion is not set!\");",
+									"    console.error(\"💡 Solution: Run '4.3 Get Evaluation for Approval' first.\");",
+									"    throw new Error(\"evaluationVersion is required for optimistic locking. Please run '4.3 Get Evaluation for Approval' first.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);",
+									"console.log(\"✅ Using evaluationId:\", evaluationId);",
+									"console.log(\"✅ Using evaluationVersion:\", evaluationVersion);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.test(\"Evaluation is RETURNED\", function () {",
+									"    pm.expect(jsonData.status).to.eql(\"RETURNED\");",
+									"});",
+									"",
+									"// Update version from ETag header for optimistic locking",
+									"const etag = pm.response.headers.get(\"ETag\");",
+									"if (etag) {",
+									"    pm.collectionVariables.set(\"evaluationVersion\", etag);",
+									"    console.log(\"✅ Updated evaluationVersion from ETag:\", etag);",
+									"} else if (jsonData.version !== undefined) {",
+									"    // Fallback: use version from response body (quoted like ETag)",
+									"    const version = '\"' + jsonData.version + '\"';",
+									"    pm.collectionVariables.set(\"evaluationVersion\", version);",
+									"    console.log(\"✅ Updated evaluationVersion from response body:\", version);",
+									"} else {",
+									"    console.warn(\"⚠️  No ETag or version found in response\");",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{approverEmail}}"
+							},
+							{
+								"key": "If-Match",
+								"value": "{{evaluationVersion}}"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "return-eval-{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"reason\": \"Please provide more details on the technical achievements.\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/return",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "return"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "5. Statistics & Reports",
+			"item": [
+				{
+					"name": "5.1 Get User Stats",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/me/stats",
+							"host": ["{{baseUrl}}"],
+							"path": ["me", "stats"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5.2 Get Cycle Statistics",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' or '1.0 List Existing Cycles' first.\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/stats",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "stats"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5.3 List All Cycles",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles?include_pagination=true",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles"],
+							"query": [
+								{
+									"key": "include_pagination",
+									"value": "true"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5.4 List Evaluations with Filters",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' or '1.0 List Existing Cycles' first.\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations?status=APPROVED&expand=employees",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations"],
+							"query": [
+								{
+									"key": "status",
+									"value": "APPROVED"
+								},
+								{
+									"key": "expand",
+									"value": "employees"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "6. Employee Management",
+			"item": [
+				{
+					"name": "6.1 List Employees",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/employees?limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["employees"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "6.2 Quick Search Employees",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/employees/search/quick?q=john",
+							"host": ["{{baseUrl}}"],
+							"path": ["employees", "search", "quick"],
+							"query": [
+								{
+									"key": "q",
+									"value": "john"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "6.3 Bulk Employee Lookup",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"employee_ids\": [\n        \"{{reviewerEmployeeId}}\",\n        \"{{subjectEmployeeId}}\",\n        \"{{approverEmployeeId}}\"\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/employees/bulk-lookup",
+							"host": ["{{baseUrl}}"],
+							"path": ["employees", "bulk-lookup"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "6.4 Get Employee by ID",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/employees/{{reviewerEmployeeId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["employees", "{{reviewerEmployeeId}}"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "7. Audit & Admin",
+			"item": [
+				{
+					"name": "7.1 Admin Ping",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/admin/ping",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "ping"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "7.2 List Audit Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/audit?entity_type=review_cycle&limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["audit"],
+							"query": [
+								{
+									"key": "entity_type",
+									"value": "review_cycle"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "7.3 Get Audit Events for Cycle",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' or '1.0 List Existing Cycles' first.\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/audit?entity_type=review_cycle&entity_id={{cycleId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["audit"],
+							"query": [
+								{
+									"key": "entity_type",
+									"value": "review_cycle"
+								},
+								{
+									"key": "entity_id",
+									"value": "{{cycleId}}"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "8. Error Scenarios & Edge Cases",
+			"item": [
+				{
+					"name": "8.1 Try to Activate Cycle Without Form",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/activate",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "activate"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "8.2 Try to Update ACTIVE Cycle",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Updated Name\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "8.3 Try to Create Assignment in ACTIVE Cycle",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"items\": [\n        {\n            \"reviewer_employee_id\": \"{{reviewerEmployeeId}}\",\n            \"subject_employee_id\": \"{{subjectEmployeeId}}\",\n            \"approver_employee_id\": \"{{approverEmployeeId}}\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/assignments/bulk",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "assignments", "bulk"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "8.4 Try to Submit Invalid Evaluation",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							},
+							{
+								"key": "If-Match",
+								"value": "{{evaluationVersion}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"responses\": [\n        {\n            \"question_key\": \"performance_rating\",\n            \"value_text\": \"10\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/draft",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "draft"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "8.5 Try to Access Without If-Match Header",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-Email",
+								"value": "{{reviewerEmail}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"responses\": []\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/evaluations/{{evaluationId}}/draft",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "evaluations", "{{evaluationId}}", "draft"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "9. Close Cycle",
+			"item": [
+				{
+					"name": "9.1 Close Cycle",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Validate cycleId",
+									"let cycleId = pm.collectionVariables.get(\"cycleId\");",
+									"",
+									"if (!cycleId || cycleId === \"null\" || cycleId === \"undefined\" || cycleId === \"\") {",
+									"    console.error(\"❌ cycleId is not set!\");",
+									"    console.error(\"💡 Solution: Run '2.1 Create Review Cycle' or '1.0 List Existing Cycles' first.\");",
+									"    throw new Error(\"cycleId is required.\");",
+									"}",
+									"",
+									"console.log(\"✅ Using cycleId:\", cycleId);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const jsonData = pm.response.json();",
+									"pm.test(\"Cycle is CLOSED\", function () {",
+									"    pm.expect(jsonData.status).to.eql(\"CLOSED\");",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-User-Email",
+								"value": "{{adminEmail}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/cycles/{{cycleId}}/close",
+							"host": ["{{baseUrl}}"],
+							"path": ["cycles", "{{cycleId}}", "close"]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
+
