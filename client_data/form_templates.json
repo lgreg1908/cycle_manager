@@ -1,0 +1,52 @@
+[
+  {
+    "name": "Standard Performance Review Form",
+    "version": 1,
+    "description": "Standard performance review form for annual reviews",
+    "is_active": true,
+    "fields": [
+      {
+        "field_key": "overall_rating",
+        "position": 1,
+        "override_label": null,
+        "override_required": null
+      },
+      {
+        "field_key": "q1",
+        "position": 2,
+        "override_label": null,
+        "override_required": null
+      },
+      {
+        "field_key": "technical_skills",
+        "position": 3,
+        "override_label": null,
+        "override_required": null
+      },
+      {
+        "field_key": "communication",
+        "position": 4,
+        "override_label": null,
+        "override_required": null
+      },
+      {
+        "field_key": "collaboration",
+        "position": 5,
+        "override_label": null,
+        "override_required": null
+      },
+      {
+        "field_key": "goals_achievement",
+        "position": 6,
+        "override_label": null,
+        "override_required": null
+      },
+      {
+        "field_key": "development_areas",
+        "position": 7,
+        "override_label": null,
+        "override_required": null
+      }
+    ]
+  }
+]
