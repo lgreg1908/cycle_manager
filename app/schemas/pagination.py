@@ -31,3 +31,4 @@ class PaginatedResponse(BaseModel, Generic[T]):
     items: list[T]
     pagination: PaginationMeta
 
+
