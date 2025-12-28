@@ -457,6 +457,8 @@ def save_draft(
             e2.updated_at = datetime.utcnow()
 
             db.flush()  # bumps version + ensures responses are queryable
+            # Refresh to ensure we have the latest version after flush
+            db.refresh(e2)
 
             log_event(
                 db=db,
@@ -559,6 +561,8 @@ def submit_evaluation(
                 e.updated_at = datetime.utcnow()
 
                 db.flush()  # bumps version
+                # Refresh to ensure we have the latest version after flush
+                db.refresh(e)
 
                 log_event(
                     db=db,
@@ -651,6 +655,8 @@ def return_evaluation(
                 e.updated_at = datetime.utcnow()
 
                 db.flush()  # bumps version
+                # Refresh to ensure we have the latest version after flush
+                db.refresh(e)
 
                 log_event(
                     db=db,
@@ -744,6 +750,8 @@ def approve_evaluation(
                 e.updated_at = datetime.utcnow()
 
                 db.flush()  # bumps version
+                # Refresh to ensure we have the latest version after flush
+                db.refresh(e)
 
                 log_event(
                     db=db,

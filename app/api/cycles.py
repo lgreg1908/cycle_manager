@@ -86,6 +86,23 @@ def get_cycle(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    # Validate cycle_id is not empty
+    if not cycle_id or cycle_id.lower() in ("null", "undefined", ""):
+        raise HTTPException(
+            status_code=422, 
+            detail="Cycle ID is required. Please create a cycle first or provide a valid cycle ID."
+        )
+    
+    # Validate UUID format before querying database
+    try:
+        import uuid
+        uuid.UUID(cycle_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, 
+            detail=f"Invalid cycle ID format: '{cycle_id}'. Cycle ID must be a valid UUID."
+        )
+    
     c = db.get(ReviewCycle, cycle_id)
     if not c:
         raise HTTPException(status_code=404, detail="Cycle not found")
