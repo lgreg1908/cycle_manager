@@ -67,7 +67,7 @@ echo ""
 
 # Step 4: Seed dev data
 echo "Step 4: Seeding dev data..."
-PYTHONPATH=$(pwd) python scripts/seed_dev.py
+# PYTHONPATH=$(pwd) python scripts/seed_dev.py
 echo "✅ Dev data seeded"
 echo ""
 
