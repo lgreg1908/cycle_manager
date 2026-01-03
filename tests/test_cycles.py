@@ -100,6 +100,60 @@ def test_cycle_lifecycle(db_session):
     assert r.status_code == 409
 
 
+def test_activate_cycle_without_form(db_session):
+    """Test that cycle can be activated without form (current API behavior)"""
+    from tests.helpers import grant_role
+    admin = seed_admin(db_session, "admin@local.test")
+    client = TestClient(app)
+
+    # Create cycle without form
+    r = client.post(
+        "/cycles",
+        headers={"X-User-Email": "admin@local.test"},
+        json={"name": "Test Cycle"},
+    )
+    assert r.status_code == 201
+    cycle_id = r.json()["id"]
+
+    # Activate - API currently allows this (readiness check warns but doesn't block)
+    r = client.post(
+        f"/cycles/{cycle_id}/activate",
+        headers={"X-User-Email": "admin@local.test"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "ACTIVE"
+
+
+def test_close_cycle_workflow(db_session):
+    """Test closing a cycle"""
+    admin = seed_admin(db_session, "admin@local.test")
+    client = TestClient(app)
+
+    # Create and activate cycle first (can only close ACTIVE cycles)
+    r = client.post(
+        "/cycles",
+        headers={"X-User-Email": "admin@local.test"},
+        json={"name": "Test Cycle"},
+    )
+    assert r.status_code == 201
+    cycle_id = r.json()["id"]
+    
+    # Activate the cycle
+    r = client.post(
+        f"/cycles/{cycle_id}/activate",
+        headers={"X-User-Email": "admin@local.test"},
+    )
+    assert r.status_code == 200
+    
+    # Now close it
+    r = client.post(
+        f"/cycles/{cycle_id}/close",
+        headers={"X-User-Email": "admin@local.test"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "CLOSED"
+
+
 def test_list_cycles_requires_auth(db_session):
     # No header => 401
     client = TestClient(app)

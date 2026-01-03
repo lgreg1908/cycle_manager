@@ -707,3 +707,88 @@ def test_validate_evaluation_access_control(db_session, client: TestClient):
         headers={"X-User-Email": "user@example.com"},
     )
     assert response.status_code == 403
+
+
+def test_submit_invalid_evaluation_fails(db_session, client: TestClient):
+    """Test that submitting an evaluation without required fields fails validation"""
+    admin = create_user(db_session, "admin@local.test", "Admin")
+    grant_role(db_session, admin, "ADMIN")
+
+    reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
+    approver_user = create_user(db_session, "approver@local.test", "Approver")
+
+    reviewer_emp = create_employee(db_session, "E300", "Reviewer", user=reviewer_user)
+    approver_emp = create_employee(db_session, "E301", "Approver", user=approver_user)
+    subject_emp = create_employee(db_session, "E302", "Subject")
+
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    form = create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[
+            {"key": "required_field", "field_type": "text", "required": True},
+        ],
+    )
+
+    assignment = create_assignment(db_session, cycle, reviewer_emp, subject_emp, approver_emp)
+
+    # Create evaluation
+    response = client.post(
+        f"/cycles/{cycle.id}/assignments/{assignment.id}/evaluation",
+        headers={"X-User-Email": "reviewer@local.test"},
+    )
+    assert response.status_code == 201
+    eval_data = response.json()
+    evaluation_id = eval_data["id"]
+    evaluation_version = eval_data["version"]
+
+    # Try to submit without required field
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation_id}/submit",
+        headers={
+            "X-User-Email": "reviewer@local.test",
+            "If-Match": str(evaluation_version),
+        },
+    )
+    # Should fail validation
+    assert response.status_code in [400, 422]
+
+
+def test_save_draft_without_if_match_header_fails(db_session, client: TestClient):
+    """Test that saving draft without If-Match header fails"""
+    admin = create_user(db_session, "admin@local.test", "Admin")
+    grant_role(db_session, admin, "ADMIN")
+
+    reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
+    approver_user = create_user(db_session, "approver@local.test", "Approver")
+
+    reviewer_emp = create_employee(db_session, "E400", "Reviewer", user=reviewer_user)
+    approver_emp = create_employee(db_session, "E401", "Approver", user=approver_user)
+    subject_emp = create_employee(db_session, "E402", "Subject")
+
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[{"key": "q1", "field_type": "text", "required": False}],
+    )
+
+    assignment = create_assignment(db_session, cycle, reviewer_emp, subject_emp, approver_emp)
+
+    # Create evaluation
+    response = client.post(
+        f"/cycles/{cycle.id}/assignments/{assignment.id}/evaluation",
+        headers={"X-User-Email": "reviewer@local.test"},
+    )
+    assert response.status_code == 201
+    eval_data = response.json()
+    evaluation_id = eval_data["id"]
+
+    # Try to save draft without If-Match header
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation_id}/draft",
+        headers={"X-User-Email": "reviewer@local.test"},
+        json={"responses": [{"question_key": "q1", "value_text": "test"}]},
+    )
+    # Should require If-Match header
+    assert response.status_code in [400, 428]

@@ -41,6 +41,39 @@ def seed_cycle(db_session, created_by_user_id):
     return c
 
 
+def test_create_assignment_in_active_cycle_fails(db_session):
+    """Test that assignments cannot be created in ACTIVE cycle"""
+    from tests.helpers import create_user, grant_role, create_employee
+    from app.models.review_cycle import ReviewCycle
+    
+    admin = seed_admin(db_session, "admin@local.test")
+    reviewer_emp = seed_employee(db_session, "E200", "Reviewer")
+    subject_emp = seed_employee(db_session, "E201", "Subject")
+    approver_emp = seed_employee(db_session, "E202", "Approver")
+
+    # Create ACTIVE cycle
+    cycle = seed_cycle(db_session, admin.id)
+    cycle.status = "ACTIVE"
+    db_session.commit()
+
+    client = TestClient(app)
+    r = client.post(
+        f"/cycles/{cycle.id}/assignments/bulk",
+        headers={"X-User-Email": "admin@local.test"},
+        json={
+            "items": [
+                {
+                    "reviewer_employee_id": str(reviewer_emp.id),
+                    "subject_employee_id": str(subject_emp.id),
+                    "approver_employee_id": str(approver_emp.id),
+                }
+            ]
+        },
+    )
+    # Should fail - can't add assignments to active cycle
+    assert r.status_code in [400, 409, 422]
+
+
 def test_bulk_create_assignments_admin_only(db_session):
     # non-admin user exists
     u = User(email="user@local.test", full_name="User", is_active=True, is_admin=False)
