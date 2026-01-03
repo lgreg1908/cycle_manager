@@ -11,13 +11,16 @@ from app.api.evaluations import router as evaluations_router
 from app.api.audit import router as audit_router
 from app.api.forms import router as forms_router
 from app.api.employees import router as employees_router
+from app.core.config import settings
 
 app = FastAPI(title="HR Cycle Manager")
 
 # CORS middleware for frontend access
+# In production, set CORS_ORIGINS env var to specific origins (comma-separated)
+# In development, "*" allows all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

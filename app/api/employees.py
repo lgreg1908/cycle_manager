@@ -1,24 +1,33 @@
+from typing import Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.employee import Employee
 from app.models.user import User
-from app.schemas.employee import EmployeeOut, EmployeeWithUserOut
+from app.schemas.employee import (
+    EmployeeOut,
+    EmployeeWithUserOut,
+    BulkEmployeeLookupRequest,
+    BulkEmployeeLookupResponse,
+)
+from app.schemas.pagination import PaginatedResponse, PaginationMeta
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
 
 def employee_to_out(e: Employee, include_user: bool = False) -> EmployeeOut | EmployeeWithUserOut:
-    if include_user and e.user:
+    if include_user:
+        # Always return EmployeeWithUserOut when include_user=True, even if no user
         return EmployeeWithUserOut(
             id=str(e.id),
             employee_number=e.employee_number,
             display_name=e.display_name,
             user_id=str(e.user_id) if e.user_id else None,
-            user_email=e.user.email,
-            user_full_name=e.user.full_name,
+            user_email=e.user.email if e.user else None,
+            user_full_name=e.user.full_name if e.user else None,
         )
     return EmployeeOut(
         id=str(e.id),
@@ -28,16 +37,19 @@ def employee_to_out(e: Employee, include_user: bool = False) -> EmployeeOut | Em
     )
 
 
-@router.get("", response_model=list[EmployeeOut])
+@router.get("")
 def list_employees(
     search: str | None = Query(default=None, description="Search by employee number or display name"),
     limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    include_pagination: bool = Query(default=False, description="Include pagination metadata"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """
     List all employees with optional search and pagination.
+    
+    Use ?include_pagination=true to get pagination metadata.
     """
     query = db.query(Employee)
 
@@ -48,8 +60,24 @@ def list_employees(
             | (Employee.display_name.ilike(search_term))
         )
 
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination
     employees = query.order_by(Employee.display_name.asc()).offset(offset).limit(limit).all()
-    return [employee_to_out(e) for e in employees]
+    items = [employee_to_out(e) for e in employees]
+    
+    if include_pagination:
+        return PaginatedResponse(
+            items=items,
+            pagination=PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_more=(offset + len(items) < total),
+            ),
+        )
+    return items
 
 
 @router.get("/{employee_id}", response_model=EmployeeWithUserOut)
@@ -107,4 +135,35 @@ def quick_search_employees(
     )
     
     return [employee_to_out(e) for e in exact_matches + partial_matches]
+
+
+@router.post("/bulk-lookup", response_model=BulkEmployeeLookupResponse)
+def bulk_lookup_employees(
+    payload: BulkEmployeeLookupRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Lookup multiple employees by their IDs in a single request.
+    Useful for resolving employee names when you have a list of employee IDs.
+    """
+    # Convert string IDs to UUIDs and query
+    from uuid import UUID
+    
+    try:
+        uuid_ids = [UUID(eid) for eid in payload.employee_ids]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid employee ID format: {e}")
+    
+    employees = db.query(Employee).filter(Employee.id.in_(uuid_ids)).all()
+    
+    # Build response
+    found_ids = {str(e.id) for e in employees}
+    missing_ids = [eid for eid in payload.employee_ids if eid not in found_ids]
+    
+    return BulkEmployeeLookupResponse(
+        employees=[employee_to_out(e) for e in employees],
+        missing_ids=missing_ids,
+    )
+
 

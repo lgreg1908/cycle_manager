@@ -449,3 +449,346 @@ def test_submit_succeeds_when_required_fields_present(db_session, client: TestCl
     )
     assert r.status_code == 200
     assert r.json()["status"] == "SUBMITTED"
+
+
+# ===== Validation Preview Tests =====
+
+def test_validate_evaluation_not_found(db_session, client: TestClient):
+    """Test validation preview for non-existent evaluation"""
+    import uuid
+    from tests.helpers import create_user, grant_role, create_cycle
+    
+    admin = create_user(db_session, "admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    
+    fake_id = str(uuid.uuid4())
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{fake_id}/validate",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 404
+
+
+def test_validate_evaluation_no_form(db_session, client: TestClient):
+    """Test validation preview when cycle has no form template"""
+    from datetime import datetime
+    from app.models.evaluation import Evaluation
+    from tests.helpers import create_user, grant_role, create_cycle, create_employee, create_assignment
+    
+    admin = create_user(db_session, "admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    # Create admin employee and link to admin user
+    admin_emp = create_employee(db_session, "A001", "Admin Employee", user=admin)
+    
+    reviewer = admin_emp  # Admin is the reviewer
+    subject = create_employee(db_session, "S001", "Subject")
+    approver = create_employee(db_session, "AP001", "Approver")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    assignment = create_assignment(
+        db_session,
+        cycle=cycle,
+        reviewer=reviewer,
+        subject=subject,
+        approver=approver,
+    )
+    
+    evaluation = Evaluation(
+        cycle_id=cycle.id,
+        assignment_id=assignment.id,
+        status="DRAFT",
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+    
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation.id}/validate",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["valid"] is False
+    assert len(data["errors"]) > 0
+    assert any("form" in err["message"].lower() for err in data["errors"])
+
+
+def test_validate_evaluation_with_errors(db_session, client: TestClient):
+    """Test validation preview with validation errors"""
+    from datetime import datetime
+    from app.models.evaluation import Evaluation
+    from app.models.evaluation_response import EvaluationResponse
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_employee, create_assignment,
+        create_form_for_cycle_with_fields,
+    )
+    
+    admin = create_user(db_session, "admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    # Create admin employee and link to admin user
+    admin_emp = create_employee(db_session, "A001", "Admin Employee", user=admin)
+    
+    reviewer = admin_emp  # Admin is the reviewer
+    subject = create_employee(db_session, "S001", "Subject")
+    approver = create_employee(db_session, "AP001", "Approver")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[
+            {"key": "required_field", "field_type": "text", "required": True},
+            {"key": "number_field", "field_type": "number", "required": True, "rules": {"min": 1, "max": 10}},
+        ],
+    )
+    
+    assignment = create_assignment(
+        db_session,
+        cycle=cycle,
+        reviewer=reviewer,
+        subject=subject,
+        approver=approver,
+    )
+    
+    evaluation = Evaluation(
+        cycle_id=cycle.id,
+        assignment_id=assignment.id,
+        status="DRAFT",
+    )
+    db_session.add(evaluation)
+    db_session.flush()
+    
+    # Add invalid response (missing required field, invalid number)
+    response_obj = EvaluationResponse(
+        evaluation_id=evaluation.id,
+        question_key="number_field",
+        value_text="999",  # Exceeds max
+    )
+    db_session.add(response_obj)
+    db_session.commit()
+    
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation.id}/validate",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["valid"] is False
+    assert len(data["errors"]) > 0
+    # Should have error for missing required field
+    assert any(err["field"] == "required_field" for err in data["errors"])
+    # Should have error for number exceeding max
+    assert any(err["field"] == "number_field" and "max" in err["code"] for err in data["errors"])
+
+
+def test_validate_evaluation_valid(db_session, client: TestClient):
+    """Test validation preview with valid evaluation"""
+    from datetime import datetime
+    from app.models.evaluation import Evaluation
+    from app.models.evaluation_response import EvaluationResponse
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_employee, create_assignment,
+        create_form_for_cycle_with_fields,
+    )
+    
+    admin = create_user(db_session, "admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    # Create admin employee and link to admin user
+    admin_emp = create_employee(db_session, "A001", "Admin Employee", user=admin)
+    
+    reviewer = admin_emp  # Admin is the reviewer
+    subject = create_employee(db_session, "S001", "Subject")
+    approver = create_employee(db_session, "AP001", "Approver")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[
+            {"key": "text_field", "field_type": "text", "required": True},
+            {"key": "number_field", "field_type": "number", "required": True, "rules": {"min": 1, "max": 10, "integer": True}},
+        ],
+    )
+    
+    assignment = create_assignment(
+        db_session,
+        cycle=cycle,
+        reviewer=reviewer,
+        subject=subject,
+        approver=approver,
+    )
+    
+    evaluation = Evaluation(
+        cycle_id=cycle.id,
+        assignment_id=assignment.id,
+        status="DRAFT",
+    )
+    db_session.add(evaluation)
+    db_session.flush()
+    
+    # Add valid responses
+    responses = [
+        EvaluationResponse(
+            evaluation_id=evaluation.id,
+            question_key="text_field",
+            value_text="Valid text",
+        ),
+        EvaluationResponse(
+            evaluation_id=evaluation.id,
+            question_key="number_field",
+            value_text="5",
+        ),
+    ]
+    db_session.add_all(responses)
+    db_session.commit()
+    
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation.id}/validate",
+        headers={"X-User-Email": "admin@example.com"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["valid"] is True
+    assert len(data["errors"]) == 0
+    assert len(data["warnings"]) > 0
+    assert any("ready" in w.lower() for w in data["warnings"])
+
+
+def test_validate_evaluation_access_control(db_session, client: TestClient):
+    """Test validation preview access control"""
+    from datetime import datetime
+    from app.models.evaluation import Evaluation
+    from tests.helpers import (
+        create_user, grant_role, create_cycle, create_employee, create_assignment,
+        create_form_for_cycle_with_fields,
+    )
+    
+    admin = create_user(db_session, "admin@example.com", is_admin=True)
+    grant_role(db_session, admin, "ADMIN")
+    
+    user = create_user(db_session, "user@example.com")
+    employee = create_employee(db_session, "E001", "User Employee", user=user)
+    
+    reviewer = create_employee(db_session, "R001", "Reviewer")
+    subject = create_employee(db_session, "S001", "Subject")
+    approver = create_employee(db_session, "A001", "Approver")
+    
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[{"key": "q1", "field_type": "text"}],
+    )
+    
+    # Create assignment where user is NOT involved
+    assignment = create_assignment(
+        db_session,
+        cycle=cycle,
+        reviewer=reviewer,
+        subject=subject,
+        approver=approver,
+    )
+    
+    evaluation = Evaluation(
+        cycle_id=cycle.id,
+        assignment_id=assignment.id,
+        status="DRAFT",
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+    
+    # User should not be able to validate this evaluation
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation.id}/validate",
+        headers={"X-User-Email": "user@example.com"},
+    )
+    assert response.status_code == 403
+
+
+def test_submit_invalid_evaluation_fails(db_session, client: TestClient):
+    """Test that submitting an evaluation without required fields fails validation"""
+    admin = create_user(db_session, "admin@local.test", "Admin")
+    grant_role(db_session, admin, "ADMIN")
+
+    reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
+    approver_user = create_user(db_session, "approver@local.test", "Approver")
+
+    reviewer_emp = create_employee(db_session, "E300", "Reviewer", user=reviewer_user)
+    approver_emp = create_employee(db_session, "E301", "Approver", user=approver_user)
+    subject_emp = create_employee(db_session, "E302", "Subject")
+
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    form = create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[
+            {"key": "required_field", "field_type": "text", "required": True},
+        ],
+    )
+
+    assignment = create_assignment(db_session, cycle, reviewer_emp, subject_emp, approver_emp)
+
+    # Create evaluation
+    response = client.post(
+        f"/cycles/{cycle.id}/assignments/{assignment.id}/evaluation",
+        headers={"X-User-Email": "reviewer@local.test"},
+    )
+    assert response.status_code == 201
+    eval_data = response.json()
+    evaluation_id = eval_data["id"]
+    evaluation_version = eval_data["version"]
+
+    # Try to submit without required field
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation_id}/submit",
+        headers={
+            "X-User-Email": "reviewer@local.test",
+            "If-Match": str(evaluation_version),
+        },
+    )
+    # Should fail validation
+    assert response.status_code in [400, 422]
+
+
+def test_save_draft_without_if_match_header_fails(db_session, client: TestClient):
+    """Test that saving draft without If-Match header fails"""
+    admin = create_user(db_session, "admin@local.test", "Admin")
+    grant_role(db_session, admin, "ADMIN")
+
+    reviewer_user = create_user(db_session, "reviewer@local.test", "Reviewer")
+    approver_user = create_user(db_session, "approver@local.test", "Approver")
+
+    reviewer_emp = create_employee(db_session, "E400", "Reviewer", user=reviewer_user)
+    approver_emp = create_employee(db_session, "E401", "Approver", user=approver_user)
+    subject_emp = create_employee(db_session, "E402", "Subject")
+
+    cycle = create_cycle(db_session, created_by=admin, status="ACTIVE")
+    create_form_for_cycle_with_fields(
+        db_session,
+        cycle=cycle,
+        fields=[{"key": "q1", "field_type": "text", "required": False}],
+    )
+
+    assignment = create_assignment(db_session, cycle, reviewer_emp, subject_emp, approver_emp)
+
+    # Create evaluation
+    response = client.post(
+        f"/cycles/{cycle.id}/assignments/{assignment.id}/evaluation",
+        headers={"X-User-Email": "reviewer@local.test"},
+    )
+    assert response.status_code == 201
+    eval_data = response.json()
+    evaluation_id = eval_data["id"]
+
+    # Try to save draft without If-Match header
+    response = client.post(
+        f"/cycles/{cycle.id}/evaluations/{evaluation_id}/draft",
+        headers={"X-User-Email": "reviewer@local.test"},
+        json={"responses": [{"question_key": "q1", "value_text": "test"}]},
+    )
+    # Should require If-Match header
+    assert response.status_code in [400, 428]

@@ -1,8 +1,10 @@
+from typing import Union
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from app.core.rbac import require_roles
 from app.db.session import get_db
@@ -17,6 +19,7 @@ from app.schemas.forms import (
     FormTemplateFieldAttach,
     FormTemplateWithFieldsOut,
 )
+from app.schemas.pagination import PaginatedResponse, PaginationMeta
 from app.core.audit import log_event
 from app.models.user import User
 
@@ -228,17 +231,20 @@ def attach_fields_to_form(
     )
 
 
-@router.get("", response_model=list[FormTemplateOut])
+@router.get("")
 def list_form_templates(
     search: str | None = Query(default=None, description="Search by name or description"),
     is_active: bool | None = Query(default=None, description="Filter by active status"),
     limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
     offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    include_pagination: bool = Query(default=False, description="Include pagination metadata"),
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("ADMIN")),
 ):
     """
     List all form templates with optional search and filtering.
+    
+    Use ?include_pagination=true to get pagination metadata.
     """
     query = db.query(FormTemplate)
     
@@ -252,8 +258,24 @@ def list_form_templates(
     if is_active is not None:
         query = query.filter(FormTemplate.is_active == is_active)
     
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination
     forms = query.order_by(FormTemplate.created_at.desc()).offset(offset).limit(limit).all()
-    return [_form_out(f) for f in forms]
+    items = [_form_out(f) for f in forms]
+    
+    if include_pagination:
+        return PaginatedResponse(
+            items=items,
+            pagination=PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_more=(offset + len(items) < total),
+            ),
+        )
+    return items
 
 
 @router.get("/{form_id}", response_model=FormTemplateWithFieldsOut)

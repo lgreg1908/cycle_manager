@@ -1,0 +1,73 @@
+[
+  {
+    "key": "overall_rating",
+    "label": "Overall Performance Rating",
+    "field_type": "number",
+    "required": true,
+    "rules": {
+      "min": 1,
+      "max": 5,
+      "integer": true
+    }
+  },
+  {
+    "key": "q1",
+    "label": "Overall Comments",
+    "field_type": "text",
+    "required": false,
+    "rules": {
+      "max_length": 2000
+    }
+  },
+  {
+    "key": "technical_skills",
+    "label": "Technical Skills Rating",
+    "field_type": "number",
+    "required": true,
+    "rules": {
+      "min": 1,
+      "max": 5,
+      "integer": true
+    }
+  },
+  {
+    "key": "communication",
+    "label": "Communication Skills Rating",
+    "field_type": "number",
+    "required": true,
+    "rules": {
+      "min": 1,
+      "max": 5,
+      "integer": true
+    }
+  },
+  {
+    "key": "collaboration",
+    "label": "Collaboration Rating",
+    "field_type": "number",
+    "required": false,
+    "rules": {
+      "min": 1,
+      "max": 5,
+      "integer": true
+    }
+  },
+  {
+    "key": "goals_achievement",
+    "label": "Goals Achievement Comments",
+    "field_type": "text",
+    "required": false,
+    "rules": {
+      "max_length": 1000
+    }
+  },
+  {
+    "key": "development_areas",
+    "label": "Development Areas",
+    "field_type": "text",
+    "required": false,
+    "rules": {
+      "max_length": 1500
+    }
+  }
+]

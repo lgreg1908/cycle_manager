@@ -1,6 +1,8 @@
+from typing import Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Header
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from app.core.rbac import require_roles
 from app.core.security import get_current_user
@@ -10,6 +12,8 @@ from app.models.review_assignment import ReviewAssignment
 from app.models.employee import Employee
 from app.models.user import User
 from app.schemas.review_assignment import AssignmentBulkCreate, AssignmentOut
+from app.schemas.expanded import AssignmentOutExpanded
+from app.schemas.pagination import PaginatedResponse, PaginationMeta
 from app.core.audit import log_event
 from app.core.idempotency import (
     begin_idempotent_request,
@@ -32,21 +36,52 @@ def to_out(a: ReviewAssignment) -> AssignmentOut:
     )
 
 
-@router.get("", response_model=list[AssignmentOut])
+def to_out_expanded(a: ReviewAssignment, reviewer: Employee | None, subject: Employee | None, approver: Employee | None) -> AssignmentOutExpanded:
+    """Convert assignment to expanded format with employee names"""
+    return AssignmentOutExpanded(
+        id=str(a.id),
+        cycle_id=str(a.cycle_id),
+        reviewer_employee_id=str(a.reviewer_employee_id),
+        reviewer_name=reviewer.display_name if reviewer else None,
+        reviewer_employee_number=reviewer.employee_number if reviewer else None,
+        subject_employee_id=str(a.subject_employee_id),
+        subject_name=subject.display_name if subject else None,
+        subject_employee_number=subject.employee_number if subject else None,
+        approver_employee_id=str(a.approver_employee_id),
+        approver_name=approver.display_name if approver else None,
+        approver_employee_number=approver.employee_number if approver else None,
+        status=a.status,
+        created_at=a.created_at.isoformat() if a.created_at else "",
+    )
+
+
+@router.get("")
 def list_assignments(
     cycle_id: str,
     reviewer_employee_id: str | None = Query(default=None),
     subject_employee_id: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    expand: str | None = Query(default=None, description="Comma-separated list: 'employees' to include employee names"),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of results"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
+    include_pagination: bool = Query(default=False, description="Include pagination metadata"),
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("ADMIN")),  # tightened: admin-only for now
 ):
+    """
+    List assignments for a cycle with optional filtering, pagination, and employee name expansion.
+    
+    Use ?expand=employees to include employee names in the response.
+    Use ?include_pagination=true to get pagination metadata.
+    """
     cycle = db.get(ReviewCycle, cycle_id)
     if not cycle:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
+    # Base query
     q = db.query(ReviewAssignment).filter(ReviewAssignment.cycle_id == cycle_id)
 
+    # Apply filters
     if reviewer_employee_id:
         q = q.filter(ReviewAssignment.reviewer_employee_id == reviewer_employee_id)
     if subject_employee_id:
@@ -54,8 +89,53 @@ def list_assignments(
     if status_filter:
         q = q.filter(ReviewAssignment.status == status_filter)
 
-    rows = q.order_by(ReviewAssignment.created_at.desc()).all()
-    return [to_out(r) for r in rows]
+    # Get total count for pagination (before limit/offset)
+    total = q.count()
+
+    # Apply pagination
+    q = q.order_by(ReviewAssignment.created_at.desc()).offset(offset).limit(limit)
+
+    # Get assignments
+    rows = q.all()
+    
+    # Eager load employees if expand requested (batch load to avoid N+1)
+    expand_employees = expand and "employees" in expand.split(",")
+    if expand_employees:
+        # Collect all employee IDs
+        employee_ids = set()
+        for row in rows:
+            employee_ids.add(row.reviewer_employee_id)
+            employee_ids.add(row.subject_employee_id)
+            employee_ids.add(row.approver_employee_id)
+        
+        # Batch load all employees in one query
+        employees = {str(e.id): e for e in db.query(Employee).filter(Employee.id.in_(list(employee_ids))).all()}
+        
+        # Build expanded responses
+        items = [
+            to_out_expanded(
+                row,
+                employees.get(str(row.reviewer_employee_id)),
+                employees.get(str(row.subject_employee_id)),
+                employees.get(str(row.approver_employee_id)),
+            )
+            for row in rows
+        ]
+    else:
+        items = [to_out(row) for row in rows]
+
+    # Return paginated or plain list based on parameter
+    if include_pagination:
+        return PaginatedResponse(
+            items=items,
+            pagination=PaginationMeta(
+                total=total,
+                limit=limit,
+                offset=offset,
+                has_more=(offset + len(items) < total),
+            ),
+        )
+    return items
 
 
 @router.post("/bulk", response_model=list[AssignmentOut], status_code=status.HTTP_201_CREATED)

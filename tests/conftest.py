@@ -1,4 +1,12 @@
+import os
 import pytest
+from pathlib import Path
+
+# Set ENV_FILE to .env.test before importing settings
+# This ensures tests always use the test database configuration
+BASE_DIR = Path(__file__).resolve().parents[1]  # project root
+if "ENV_FILE" not in os.environ:
+    os.environ["ENV_FILE"] = str(BASE_DIR / ".env.test")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
