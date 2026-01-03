@@ -25,3 +25,5 @@ class CycleStats(BaseModel):
     approved_rate: float = 0.0  # Percentage of evaluations approved
 
 
+
+
