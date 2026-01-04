@@ -378,3 +378,4 @@ Potential additions to the test suite:
 - Integration tests with external services
 - End-to-end browser tests (if UI is added)
 
+
